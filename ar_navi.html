@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR避難ナビ</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            color: #fff;
+            font-family: 'Helvetica Neue', sans-serif;
+            height: 100vh; width: 100vw;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ステータスバー */
+        #status-bar {
+            position: absolute;
+            top: 20px; left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 24px;
+            border-radius: 30px;
+            font-size: 15px; font-weight: bold;
+            white-space: nowrap; z-index: 10;
+            transition: background 0.5s;
+        }
+        .status-waiting { background: rgba(120,120,120,0.85); }
+        .status-safe    { background: rgba(30,160,60,0.9); }
+        .status-avoid   { background: rgba(200,120,0,0.9); }
+
+        /* 障害物インジケーター */
+        #obstacle-bar {
+            position: absolute;
+            top: 72px; left: 50%;
+            transform: translateX(-50%);
+            background: rgba(30,30,30,0.9);
+            border: 1px solid rgba(255,100,0,0.5);
+            border-radius: 12px;
+            padding: 8px 20px;
+            font-size: 13px;
+            white-space: nowrap; z-index: 10;
+            display: none;
+            text-align: center;
+        }
+        #obstacle-bar.near {
+            display: block;
+            border-color: rgba(255,60,60,0.8);
+            background: rgba(60,10,10,0.9);
+        }
+        #obstacle-bar.far {
+            display: block;
+            border-color: rgba(255,165,0,0.5);
+        }
+        #obs-dist  { font-size: 18px; font-weight: 900; color: #FF6600; }
+        #obs-dir   { font-size: 12px; color: rgba(255,255,255,0.7); margin-top: 2px; }
+
+        /* 矢印 */
+        #arrow-wrapper {
+            display: flex; align-items: center; justify-content: center;
+            width: 180px; height: 180px; margin-bottom: 20px;
+        }
+        #arrow {
+            width: 0; height: 0;
+            border-left: 55px solid transparent;
+            border-right: 55px solid transparent;
+            border-bottom: 140px solid #FFD700;
+            filter: drop-shadow(0 0 18px rgba(255,215,0,0.9));
+            transition: transform 0.25s ease-out, border-bottom-color 0.3s;
+            transform-origin: center 70%;
+        }
+        #arrow.avoid { border-bottom-color: #FF6600; }
+
+        /* 回避テキスト */
+        #avoidance-text {
+            position: absolute;
+            top: 128px; left: 50%;
+            transform: translateX(-50%);
+            font-size: 26px; font-weight: 900;
+            color: #FF6600;
+            text-shadow: 0 0 15px rgba(255,100,0,0.9);
+            white-space: nowrap; display: none; z-index: 10;
+        }
+
+        /* 目的地・距離 */
+        #destination-label {
+            font-size: 20px; font-weight: bold;
+            color: #FFD700;
+            text-shadow: 0 0 12px rgba(255,215,0,0.7);
+            margin-bottom: 10px;
+        }
+        #distance-display { font-size: 48px; font-weight: 900; letter-spacing: -1px; }
+        #distance-unit { font-size: 20px; color: rgba(255,255,255,0.7); margin-top: 4px; }
+
+        /* ミニマップ */
+        #minimap-container {
+            position: absolute;
+            bottom: 20px; left: 16px;
+            background: rgba(10,20,10,0.85);
+            border: 1px solid rgba(100,200,100,0.4);
+            border-radius: 10px;
+            padding: 4px;
+        }
+        #minimap { display: block; border-radius: 8px; }
+        #minimap-label {
+            text-align: center;
+            font-size: 10px;
+            color: rgba(255,255,255,0.4);
+            margin-top: 2px;
+        }
+
+        /* GPS送信状態 */
+        #gps-status {
+            position: absolute;
+            top: 20px; right: 16px;
+            font-size: 11px; color: rgba(255,255,255,0.4);
+            text-align: right;
+        }
+
+        /* iOSジャイロ許可 */
+        #permission-btn {
+            display: none;
+            position: absolute; bottom: 80px; left: 50%;
+            transform: translateX(-50%);
+            padding: 16px 36px; font-size: 16px; font-weight: bold;
+            background: #FFD700; color: #000;
+            border: none; border-radius: 12px; cursor: pointer;
+        }
+
+        /* デバッグ */
+        #debug-info {
+            position: absolute;
+            bottom: 12px; right: 12px;
+            font-size: 10px; color: rgba(255,255,255,0.25); line-height: 1.6;
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+
+<div id="status-bar" class="status-waiting">📡 GPS取得中...</div>
+
+<div id="obstacle-bar">
+    <div id="obs-dist">-- m</div>
+    <div id="obs-dir">障害物の方向を確認中</div>
+</div>
+
+<div id="avoidance-text"></div>
+<div id="gps-status">送信: 待機中</div>
+
+<div id="arrow-wrapper">
+    <div id="arrow"></div>
+</div>
+
+<div id="destination-label">--</div>
+<div id="distance-display">--</div>
+<div id="distance-unit">目的地まで</div>
+
+<div id="minimap-container">
+    <canvas id="minimap" width="180" height="180"></canvas>
+    <div id="minimap-label">俯瞰マップ（北↑）</div>
+</div>
+
+<button id="permission-btn" onclick="requestGyroPermission()">
+    🔄 コンパスを有効にする（iOSのみ）
+</button>
+
+<div id="debug-info">
+    lat: --<br>lng: --<br>heading: --°
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getFirestore, collection, doc, setDoc, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyBG-JwC9VKwnSHaSkvGLzNLvXtvZ3U0q6M",
+    authDomain: "heavy-rain-evacuation.firebaseapp.com",
+    projectId: "heavy-rain-evacuation",
+    storageBucket: "heavy-rain-evacuation.firebasestorage.app",
+    appId: "1:405482442865:web:99c4a046167821b4abcbd0"
+};
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ========================================
+// ★ 実験設定
+// ========================================
+const GOAL = { lat: 36.1102287, lng: 139.3642706, name: "ゴール地点★" };
+
+const OBSTACLES = [
+    { lat: 36.1095, lng: 139.3633, radiusM: 3.0, name: "障害物1" },
+];
+
+const AREA_POLYGON = [
+    [36.110889, 139.360278], [36.110306, 139.367194],
+    [36.105889, 139.365111], [36.106222, 139.357861]
+];
+
+// 障害物の情報を何m先から表示するか
+const OBS_WARN_DISTANCE = 15.0;
+
+// ========================================
+// 状態変数
+// ========================================
+let myLat = null, myLng = null;
+let deviceHeading = 0;
+let deviceId = getDeviceId();
+
+// Canvas
+const canvas  = document.getElementById('minimap');
+const ctx     = canvas.getContext('2d');
+const MAP_SIZE = 180;
+
+// ========================================
+// デバイスID
+// ========================================
+function getDeviceId() {
+    let id = localStorage.getItem('device_id');
+    if (!id) { id = 'user_' + Math.random().toString(36).substring(2, 9); localStorage.setItem('device_id', id); }
+    return id;
+}
+
+// ========================================
+// GPS自動取得 & Firestore送信
+// ========================================
+function startGPS() {
+    if (!navigator.geolocation) { document.getElementById('gps-status').textContent = 'GPS非対応'; return; }
+    navigator.geolocation.watchPosition(
+        (position) => {
+            myLat = position.coords.latitude;
+            myLng = position.coords.longitude;
+            sendToFirestore(myLat, myLng);
+            updateNavigation();
+            document.getElementById('debug-info').innerHTML =
+                'lat: ' + myLat.toFixed(6) + '<br>lng: ' + myLng.toFixed(6) +
+                '<br>heading: ' + Math.round(deviceHeading) + 'deg';
+        },
+        (err) => {
+            document.getElementById('gps-status').textContent = 'GPSエラー';
+            document.getElementById('status-bar').textContent = '位置情報を許可してください';
+        },
+        { enableHighAccuracy: true, maximumAge: 0 }
+    );
+}
+
+async function sendToFirestore(lat, lng) {
+    if (!isInsidePolygon([lat, lng], AREA_POLYGON)) {
+        document.getElementById('gps-status').textContent = '送信: エリア外';
+        return;
+    }
+    try {
+        const docName = getTimestampString() + '-' + deviceId;
+        await setDoc(doc(db, 'oame_live_data', docName), {
+            lat, lng, timestamp: serverTimestamp(), deviceId
+        });
+        document.getElementById('gps-status').textContent = '送信: ' + new Date().toLocaleTimeString('ja-JP');
+    } catch(e) { document.getElementById('gps-status').textContent = '送信失敗'; }
+}
+
+function getTimestampString() {
+    const n = new Date();
+    return String(n.getFullYear()) +
+           String(n.getMonth()+1).padStart(2,'0') +
+           String(n.getDate()).padStart(2,'0') + '-' +
+           String(n.getHours()).padStart(2,'0') +
+           String(n.getMinutes()).padStart(2,'0') +
+           String(n.getSeconds()).padStart(2,'0');
+}
+
+// ========================================
+// ナビ更新
+// ========================================
+function updateNavigation() {
+    if (myLat === null) return;
+
+    const nearest = getNearestObstacle(myLat, myLng);
+
+    // ミニマップを常時更新
+    drawMinimap(nearest);
+
+    if (nearest && nearest.distance <= nearest.radiusM) {
+        // 回避モード
+        const avoidDir = calcAvoidDirection(myLat, myLng, nearest);
+        const avoidBearing = calcBearingFromVector(avoidDir);
+        const arrowAngle   = avoidBearing - deviceHeading;
+        document.getElementById('arrow').style.transform = 'rotate(' + arrowAngle + 'deg)';
+        document.getElementById('arrow').className = 'avoid';
+
+        const avoidText = document.getElementById('avoidance-text');
+        avoidText.style.display = 'block';
+        avoidText.textContent   = avoidDir.isRight ? '>> 右に回避 >>' : '<< 左に回避 <<';
+
+        document.getElementById('destination-label').textContent = nearest.name + ' 注意！';
+        document.getElementById('distance-display').textContent  = nearest.distance.toFixed(1) + ' m';
+        document.getElementById('status-bar').textContent = '⚠️ 障害物に接近 → 回避してください';
+        document.getElementById('status-bar').className   = 'status-avoid';
+
+        updateObstacleBar(nearest, true);
+    } else {
+        // 通常ナビ
+        const distToGoal  = calcDistanceM(myLat, myLng, GOAL.lat, GOAL.lng);
+        const bearingGoal = calcBearing(myLat, myLng, GOAL.lat, GOAL.lng);
+        const arrowAngle  = bearingGoal - deviceHeading;
+
+        document.getElementById('arrow').style.transform = 'rotate(' + arrowAngle + 'deg)';
+        document.getElementById('arrow').className = '';
+        document.getElementById('avoidance-text').style.display = 'none';
+        document.getElementById('destination-label').textContent = GOAL.name;
+        document.getElementById('distance-display').textContent  = Math.round(distToGoal) + ' m';
+        document.getElementById('status-bar').textContent = 'ゴールへ進んでください';
+        document.getElementById('status-bar').className   = 'status-safe';
+
+        if (nearest) updateObstacleBar(nearest, false);
+    }
+}
+
+// 障害物インジケーター更新
+function updateObstacleBar(obs, isNear) {
+    const bar = document.getElementById('obstacle-bar');
+
+    if (obs.distance > OBS_WARN_DISTANCE) {
+        bar.className = '';
+        return;
+    }
+
+    bar.className = isNear ? 'near' : 'far';
+
+    // 障害物への方位を計算（コンパス基準の方向名）
+    const bearingToObs = calcBearing(myLat, myLng, obs.lat, obs.lng);
+    const relAngle     = ((bearingToObs - deviceHeading) + 360) % 360;
+    const dirName      = angleToDirection(relAngle);
+
+    document.getElementById('obs-dist').textContent =
+        '障害物まで ' + obs.distance.toFixed(0) + ' m';
+    document.getElementById('obs-dir').textContent  =
+        '方向: ' + dirName + '（' + Math.round(bearingToObs) + '°）| ' + obs.name;
+}
+
+// 角度を方向名に変換
+function angleToDirection(angle) {
+    const dirs = ['正面','右前方','右','右後方','後方','左後方','左','左前方'];
+    const idx   = Math.round(angle / 45) % 8;
+    return dirs[idx];
+}
+
+// ========================================
+// ミニマップ描画
+// ========================================
+function drawMinimap(nearestObs) {
+    ctx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
+
+    // 背景
+    ctx.fillStyle = 'rgba(0,20,0,0.9)';
+    ctx.roundRect(0, 0, MAP_SIZE, MAP_SIZE, 8);
+    ctx.fill();
+
+    // スケール計算（ゴールと障害物が収まるスケール）
+    const distToGoal = myLat !== null ? calcDistanceM(myLat, myLng, GOAL.lat, GOAL.lng) : 200;
+    const maxDist    = Math.max(distToGoal, 30);
+    const scale      = (MAP_SIZE * 0.38) / maxDist; // 中心から端まで
+
+    const cx = MAP_SIZE / 2;
+    const cy = MAP_SIZE / 2;
+
+    // グリッド線
+    ctx.strokeStyle = 'rgba(100,200,100,0.1)';
+    ctx.lineWidth   = 0.5;
+    [45, 90, 135].forEach(r => {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
+        ctx.stroke();
+    });
+
+    // 北の方向線
+    ctx.strokeStyle = 'rgba(100,200,100,0.2)';
+    ctx.lineWidth   = 0.5;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, 10); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 北ラベル
+    ctx.fillStyle   = 'rgba(100,200,100,0.5)';
+    ctx.font        = '9px sans-serif';
+    ctx.textAlign   = 'center';
+    ctx.fillText('N', cx, 16);
+
+    if (myLat === null) {
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font      = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('GPS取得中...', cx, cy);
+        return;
+    }
+
+    // ゴール→回避ポイント→ゴールのルートを計算
+    const goalPx = gpsToPixel(GOAL.lat, GOAL.lng, myLat, myLng, scale, cx, cy);
+
+    // 障害物の描画と回避ルートの計算
+    let avoidPts = null;
+    OBSTACLES.forEach(obs => {
+        const obsPx = gpsToPixel(obs.lat, obs.lng, myLat, myLng, scale, cx, cy);
+
+        // 障害物の安全圏（薄い赤円）
+        const radiusPx = Math.max(obs.radiusM * scale, 6);
+        ctx.beginPath();
+        ctx.arc(obsPx.x, obsPx.y, radiusPx, 0, Math.PI * 2);
+        ctx.fillStyle   = 'rgba(255,60,60,0.15)';
+        ctx.fill();
+        ctx.strokeStyle = nearestObs && nearestObs.distance <= OBS_WARN_DISTANCE
+                          ? 'rgba(255,60,60,0.8)' : 'rgba(255,120,60,0.5)';
+        ctx.lineWidth   = 1;
+        ctx.stroke();
+
+        // 障害物の四角
+        const s = 8;
+        ctx.fillStyle = 'rgba(255,80,80,0.9)';
+        ctx.fillRect(obsPx.x - s/2, obsPx.y - s/2, s, s);
+
+        // 障害物ラベル
+        ctx.fillStyle   = 'rgba(255,180,180,0.9)';
+        ctx.font        = '8px sans-serif';
+        ctx.textAlign   = 'center';
+        ctx.fillText(obs.name, obsPx.x, obsPx.y - 8);
+
+        // 距離ラベル
+        const d = calcDistanceM(myLat, myLng, obs.lat, obs.lng);
+        ctx.fillStyle = 'rgba(255,200,100,0.7)';
+        ctx.fillText(Math.round(d) + 'm', obsPx.x, obsPx.y + 16);
+
+        // 回避ルートの中間点を計算
+        const dxObs = obs.lng - myLng;
+        const dyObs = obs.lat - myLat;
+        const len   = Math.sqrt(dxObs*dxObs + dyObs*dyObs);
+        if (len > 0) {
+            const perpLng = -dyObs / len * (obs.radiusM / 111000) * 2.5;
+            const perpLat =  dxObs / len * (obs.radiusM / 111000) * 2.5;
+            avoidPts = gpsToPixel(obs.lat + perpLat, obs.lng + perpLng, myLat, myLng, scale, cx, cy);
+        }
+    });
+
+    // 避難ルート線を描画
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00FFAA';
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    if (avoidPts) {
+        ctx.lineTo(avoidPts.x, avoidPts.y);
+    }
+    ctx.lineTo(goalPx.x, goalPx.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // ゴールマーカー（黄色い星型の代わりに円）
+    ctx.beginPath();
+    ctx.arc(goalPx.x, goalPx.y, 7, 0, Math.PI * 2);
+    ctx.fillStyle   = '#FFD700';
+    ctx.fill();
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+    ctx.fillStyle   = '#000';
+    ctx.font        = '8px sans-serif';
+    ctx.textAlign   = 'center';
+    ctx.fillText('G', goalPx.x, goalPx.y + 3);
+
+    // ゴールまでの距離ラベル
+    ctx.fillStyle = 'rgba(255,215,0,0.7)';
+    ctx.font      = '8px sans-serif';
+    ctx.fillText(Math.round(distToGoal) + 'm', goalPx.x, goalPx.y - 10);
+
+    // 現在地（青い丸）
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.fillStyle   = '#4488FF';
+    ctx.fill();
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+
+    // 進行方向インジケーター（小さな矢印）
+    const headRad = deviceHeading * Math.PI / 180;
+    const arrowLen = 14;
+    ctx.strokeStyle = '#88AAFF';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.sin(headRad) * arrowLen, cy - Math.cos(headRad) * arrowLen);
+    ctx.stroke();
+
+    // スケール表示
+    const scaleMeters = Math.round(maxDist * 0.38);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font      = '8px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('～' + scaleMeters + 'm', 6, MAP_SIZE - 6);
+}
+
+// GPS → キャンバス座標変換
+function gpsToPixel(lat, lng, centerLat, centerLng, scale, cx, cy) {
+    const dLat  = lat - centerLat;
+    const dLng  = lng - centerLng;
+    const mN    = dLat * 111000;
+    const mE    = dLng * 111000 * Math.cos(centerLat * Math.PI / 180);
+    return { x: cx + mE * scale, y: cy - mN * scale };
+}
+
+// ========================================
+// 障害物・ルート計算
+// ========================================
+function getNearestObstacle(lat, lng) {
+    let nearest = null, minDist = Infinity;
+    OBSTACLES.forEach(obs => {
+        const d = calcDistanceM(lat, lng, obs.lat, obs.lng);
+        if (d < minDist) { minDist = d; nearest = Object.assign({}, obs, { distance: d }); }
+    });
+    return nearest;
+}
+
+function calcAvoidDirection(myLat, myLng, obs) {
+    const dLat = obs.lat - myLat;
+    const dLng = obs.lng - myLng;
+    return { dlat: dLng, dlng: -dLat, isRight: true };
+}
+
+function calcBearingFromVector(dir) {
+    return (Math.atan2(dir.dlng, dir.dlat) * 180 / Math.PI + 360) % 360;
+}
+
+// ========================================
+// 計算ユーティリティ
+// ========================================
+function calcDistanceM(lat1, lng1, lat2, lng2) {
+    const R    = 6371000;
+    const dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
+    const a    = Math.sin(dLat/2)**2 +
+                 Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function calcBearing(lat1, lng1, lat2, lng2) {
+    const dLng = (lng2-lng1)*Math.PI/180;
+    const y    = Math.sin(dLng)*Math.cos(lat2*Math.PI/180);
+    const x    = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) -
+                 Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng);
+    return (Math.atan2(y,x)*180/Math.PI + 360) % 360;
+}
+
+function isInsidePolygon(point, vs) {
+    const x = point[0], y = point[1]; let inside = false;
+    for (let i=0, j=vs.length-1; i<vs.length; j=i++) {
+        const xi=vs[i][0], yi=vs[i][1], xj=vs[j][0], yj=vs[j][1];
+        if (((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
+    }
+    return inside;
+}
+
+// ========================================
+// コンパス設定
+// ========================================
+function setupGyro() {
+    if (typeof DeviceOrientationEvent!=='undefined' &&
+        typeof DeviceOrientationEvent.requestPermission==='function') {
+        document.getElementById('permission-btn').style.display = 'block';
+    } else { startListening(); }
+}
+
+window.requestGyroPermission = function() {
+    DeviceOrientationEvent.requestPermission().then(state => {
+        if (state==='granted') { document.getElementById('permission-btn').style.display='none'; startListening(); }
+    }).catch(console.error);
+};
+
+function startListening() {
+    window.addEventListener('deviceorientationabsolute', (e) => {
+        if (e.alpha!==null) { deviceHeading=e.alpha; updateNavigation(); }
+    }, true);
+    window.addEventListener('deviceorientation', (e) => {
+        if (e.webkitCompassHeading!==undefined) deviceHeading=e.webkitCompassHeading;
+        else if (e.absolute&&e.alpha!==null) deviceHeading=e.alpha;
+        updateNavigation();
+    }, true);
+}
+
+// ミニマップを毎秒更新（ジャイロがない場合でも表示）
+setInterval(() => { if (myLat !== null) drawMinimap(getNearestObstacle(myLat, myLng)); }, 1000);
+
+startGPS();
+setupGyro();
+</script>
+</body>
+</html>
