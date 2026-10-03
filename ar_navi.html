@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AR避難ナビ</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; color:#fff; font-family:'Helvetica Neue',sans-serif; height:100vh; width:100vw; overflow:hidden; }
+
+/* ① 横向き指示 */
+#rotate-screen {
+  position:fixed; inset:0; background:#111;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:1000; padding:20px; text-align:center;
+}
+#rotate-screen.hidden { display:none; }
+.rotate-icon { font-size:64px; margin-bottom:24px; animation:swing 1.5s ease-in-out infinite; }
+@keyframes swing { 0%,100%{transform:rotate(-30deg)} 50%{transform:rotate(30deg)} }
+
+/* 権限画面 */
+#perm-screen {
+  position:fixed; inset:0; background:#111;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:900; padding:24px; text-align:center;
+}
+#perm-screen.hidden { display:none; }
+.start-btn {
+  margin-top:28px; padding:16px 44px; font-size:18px; font-weight:bold;
+  background:#FFD700; color:#000; border:none; border-radius:12px; cursor:pointer;
+}
+
+/* ② 3分割メイン */
+#main-app { display:none; width:100vw; height:100vh; flex-direction:row; }
+#main-app.active { display:flex; }
+
+/* 左パネル：マップ */
+#panel-left {
+  width:33%; height:100%; background:rgba(0,18,0,0.97);
+  border-right:1px solid rgba(100,200,100,0.25);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px;
+}
+#minimap { width:100%; max-width:260px; aspect-ratio:1; border-radius:8px; }
+.panel-label { font-size:10px; color:rgba(255,255,255,0.35); letter-spacing:1px; margin-bottom:5px; }
+#map-scale { font-size:9px; color:rgba(255,255,255,0.25); margin-top:4px; }
+
+/* 中央パネル：カメラAR */
+#panel-mid {
+  width:34%; height:100%; background:#0a0a0a;
+  border-right:1px solid rgba(100,100,100,0.25);
+  position:relative; overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.mid-title {
+  position:absolute; top:6px; left:0; right:0; text-align:center;
+  font-size:10px; color:rgba(255,255,255,0.3); letter-spacing:1px; z-index:5;
+}
+#cam-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+#cam-canvas { position:absolute; inset:0; width:100%; height:100%; }
+#no-cam {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  text-align:center; color:rgba(255,255,255,0.25); font-size:12px; line-height:2;
+}
+#obs-panel {
+  position:absolute; bottom:0; left:0; right:0;
+  background:rgba(0,0,0,0.75); padding:8px 10px; z-index:6;
+}
+#obs-name-mid { font-size:14px; font-weight:bold; color:#FF6600; }
+#obs-desc { font-size:11px; color:rgba(255,255,255,0.6); margin-top:2px; }
+
+/* 右パネル：ナビ */
+#panel-right {
+  width:33%; height:100%; background:#000;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px;
+}
+#nav-badge {
+  font-size:12px; font-weight:bold; padding:6px 18px;
+  border-radius:20px; margin-bottom:8px; text-align:center; white-space:nowrap;
+}
+.badge-wait  { background:rgba(120,120,120,0.8); }
+.badge-safe  { background:rgba(30,160,60,0.9); }
+.badge-avoid { background:rgba(200,100,0,0.9); }
+
+#arrow-wrap { width:120px; height:120px; display:flex; align-items:center; justify-content:center; margin:8px 0; }
+#arrow {
+  width:0; height:0;
+  border-left:38px solid transparent; border-right:38px solid transparent;
+  border-bottom:96px solid #FFD700;
+  filter:drop-shadow(0 0 12px rgba(255,215,0,0.9));
+  transition:transform .25s ease-out, border-bottom-color .3s;
+  transform-origin:center 70%;
+}
+#arrow.avoid { border-bottom-color:#FF6600; }
+
+/* ③ テキスト重複防止: 各テキストは専用の行に配置 */
+#dest-label { font-size:13px; font-weight:bold; color:#FFD700; text-align:center; min-height:18px; }
+#dist-val   { font-size:42px; font-weight:900; text-align:center; line-height:1; }
+#dist-unit  { font-size:13px; color:rgba(255,255,255,0.55); text-align:center; margin-top:2px; }
+#avoid-label{ font-size:15px; font-weight:900; color:#FF6600; text-align:center; min-height:22px; }
+#send-info  { font-size:9px; color:rgba(255,255,255,0.25); text-align:center; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<!-- 横向き指示 -->
+<div id="rotate-screen">
+  <div class="rotate-icon">📱</div>
+  <div style="font-size:22px;font-weight:bold;margin-bottom:14px;">スマートフォンを横向きに</div>
+  <div style="font-size:14px;color:rgba(255,255,255,0.6);line-height:1.8;">
+    左右どちら向きでもOKです<br>横向きにすると次の画面が表示されます
+  </div>
+  <div style="margin-top:24px;font-size:36px;">↔️</div>
+</div>
+
+<!-- 権限取得 -->
+<div id="perm-screen" class="hidden">
+  <div style="font-size:22px;font-weight:bold;margin-bottom:18px;">AR避難ナビ</div>
+  <div style="font-size:13px;color:rgba(255,255,255,0.65);line-height:2.2;">
+    📍 位置情報（GPS）<br>
+    🧭 コンパス（方向センサー）<br>
+    📷 カメラ（障害物AR表示）
+  </div>
+  <button class="start-btn" id="start-btn">許可して開始 ▶</button>
+  <div style="margin-top:14px;font-size:10px;color:rgba(255,255,255,0.25);">iOSはSafariで開いてください</div>
+</div>
+
+<!-- 3分割メイン -->
+<div id="main-app">
+
+  <!-- 左：マップ -->
+  <div id="panel-left">
+    <div class="panel-label">全体マップ（北↑）</div>
+    <canvas id="minimap" width="400" height="400"></canvas>
+    <div id="map-scale"></div>
+  </div>
+
+  <!-- 中央：カメラAR -->
+  <div id="panel-mid">
+    <div class="mid-title">カメラ（障害物AR）</div>
+    <video id="cam-video" autoplay playsinline muted></video>
+    <canvas id="cam-canvas"></canvas>
+    <div id="no-cam">📷<br>カメラ<br>利用不可</div>
+    <div id="obs-panel">
+      <div id="obs-name-mid">--</div>
+      <div id="obs-desc">障害物情報を取得中</div>
+    </div>
+  </div>
+
+  <!-- 右：ナビ矢印 -->
+  <div id="panel-right">
+    <div class="panel-label">ゴールナビ</div>
+    <div id="nav-badge" class="badge-wait">📡 GPS取得中</div>
+    <div id="arrow-wrap"><div id="arrow"></div></div>
+    <div id="dest-label">--</div>
+    <div id="avoid-label"></div>
+    <div id="dist-val">--</div>
+    <div id="dist-unit">目的地まで（m）</div>
+    <div id="send-info">送信: 待機中</div>
+  </div>
+
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getFirestore, doc, setDoc, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:"AIzaSyBG-JwC9VKwnSHaSkvGLzNLvXtvZ3U0q6M",
+  authDomain:"heavy-rain-evacuation.firebaseapp.com",
+  projectId:"heavy-rain-evacuation",
+  storageBucket:"heavy-rain-evacuation.firebasestorage.app",
+  appId:"1:405482442865:web:99c4a046167821b4abcbd0"
+};
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ★ 実験設定
+const GOAL = { lat:36.1102287, lng:139.3642706, name:"ゴール地点★" };
+const OBSTACLES = [
+  { lat:36.1095, lng:139.3633, radiusM:3.0, name:"障害物1" },
+];
+const AREA = [[36.110889,139.360278],[36.110306,139.367194],[36.105889,139.365111],[36.106222,139.357861]];
+const OBS_SHOW_DIST = 15.0; // 障害物を表示し始める距離(m)
+const CAM_FOV       = 65;   // カメラ水平視野角
+
+// 状態
+let myLat=null, myLng=null, deviceHeading=0;
+let camOK=false;
+let deviceId = (() => {
+  let id=localStorage.getItem('dv'); if (!id){id='u'+Math.random().toString(36).slice(2,9);localStorage.setItem('dv',id);} return id;
+})();
+
+// Canvas
+const mapC = document.getElementById('minimap');
+const mapX = mapC.getContext('2d');
+const camC = document.getElementById('cam-canvas');
+const camX = camC.getContext('2d');
+
+// ───── 向き検出 ─────
+function isLandscape() {
+  const a = screen.orientation ? screen.orientation.angle : (window.orientation||0);
+  return a===90 || a===270 || a===-90;
+}
+function orientOffset() {
+  const a = screen.orientation ? screen.orientation.angle : (window.orientation||0);
+  if (a===90)  return -90;
+  if (a===270||a===-90) return 90;
+  return 0;
+}
+function checkOrient() {
+  const land = isLandscape();
+  const started = document.getElementById('main-app').classList.contains('active');
+  document.getElementById('rotate-screen').classList.toggle('hidden', land);
+  if (land && !started) document.getElementById('perm-screen').classList.remove('hidden');
+  if (!land) document.getElementById('perm-screen').classList.add('hidden');
+}
+['orientationchange','resize'].forEach(e=>window.addEventListener(e, checkOrient));
+screen.orientation && screen.orientation.addEventListener('change', checkOrient);
+checkOrient();
+
+// ───── 開始ボタン ─────
+document.getElementById('start-btn').addEventListener('click', async () => {
+  // iOS コンパス許可
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { const s=await DeviceOrientationEvent.requestPermission(); if (s!=='granted'){alert('コンパスの許可が必要です');return;} }
+    catch(e){}
+  }
+  // カメラ許可
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const v = document.getElementById('cam-video');
+    v.srcObject = stream;
+    v.onloadedmetadata = () => { document.getElementById('no-cam').style.display='none'; camOK=true; syncCamCanvas(); };
+  } catch(e) { document.getElementById('cam-video').style.display='none'; }
+
+  document.getElementById('perm-screen').classList.add('hidden');
+  document.getElementById('main-app').classList.add('active');
+  startGyro(); startGPS();
+  setInterval(drawMap, 500);
+  setInterval(drawCamAR, 200);
+});
+
+function syncCamCanvas() {
+  const p = document.getElementById('panel-mid');
+  camC.width=p.offsetWidth; camC.height=p.offsetHeight;
+}
+window.addEventListener('resize', syncCamCanvas);
+
+// ───── GPS ─────
+function startGPS() {
+  navigator.geolocation.watchPosition(pos=>{
+    myLat=pos.coords.latitude; myLng=pos.coords.longitude;
+    sendFire(myLat,myLng); updateNav();
+  }, ()=>{ document.getElementById('send-info').textContent='GPSエラー'; }, {enableHighAccuracy:true,maximumAge:0});
+}
+async function sendFire(lat,lng) {
+  if (!inPoly([lat,lng],AREA)){ document.getElementById('send-info').textContent='エリア外'; return; }
+  try {
+    await setDoc(doc(db,'oame_live_data',ts()+'-'+deviceId),{lat,lng,timestamp:serverTimestamp(),deviceId});
+    document.getElementById('send-info').textContent='送信: '+new Date().toLocaleTimeString('ja-JP');
+  } catch(e){}
+}
+
+// ───── ナビ更新 ─────
+function updateNav() {
+  if (myLat===null) return;
+  const obs    = nearest();
+  const offset = orientOffset();
+
+  // 右パネル
+  if (obs && obs.d <= obs.radiusM) {
+    const avd = avoidDir(obs);
+    const ang  = bfv(avd) - deviceHeading + offset;
+    setArrow(ang,'avoid');
+    el('nav-badge','⚠️ 障害物接近 → 回避！','badge-avoid');
+    el('dest-label',obs.name+' に注意！');
+    el('avoid-label', avd.isRight ? '>> 右に回避 >>' : '<< 左に回避 <<');
+    el('dist-val', obs.d.toFixed(1));
+    el('dist-unit','mで障害物');
+  } else {
+    const dg  = dist(myLat,myLng,GOAL.lat,GOAL.lng);
+    const ang = bear(myLat,myLng,GOAL.lat,GOAL.lng) - deviceHeading + offset;
+    setArrow(ang,'');
+    el('nav-badge','ゴールへ進んでください','badge-safe');
+    el('dest-label',GOAL.name);
+    el('avoid-label','');
+    el('dist-val',Math.round(dg));
+    el('dist-unit','目的地まで（m）');
+  }
+
+  // 中央パネル 障害物情報
+  if (obs) {
+    el('obs-name-mid', obs.name);
+    const msg = obs.d<=obs.radiusM ? '⚠️ 接近中！回避してください'
+              : obs.d<=OBS_SHOW_DIST ? obs.d.toFixed(0)+'m先 — 注意して進んでください'
+              : obs.d.toFixed(0)+'m先に障害物';
+    el('obs-desc', msg);
+  }
+}
+function setArrow(ang,cls) {
+  const a=document.getElementById('arrow');
+  a.style.transform='rotate('+ang+'deg)'; a.className=cls;
+}
+function el(id,txt,cls) {
+  const e=document.getElementById(id); e.textContent=txt;
+  if (cls!==undefined) e.className=cls;
+}
+
+// ───── ミニマップ ─────
+function drawMap() {
+  const W=mapC.width, H=mapC.height, cx=W/2, cy=H/2;
+  mapX.clearRect(0,0,W,H);
+  mapX.fillStyle='rgba(0,14,0,0.97)'; mapX.fillRect(0,0,W,H);
+
+  if (myLat===null) {
+    mapX.fillStyle='rgba(255,255,255,0.3)'; mapX.font='18px sans-serif'; mapX.textAlign='center';
+    mapX.fillText('GPS取得中…',cx,cy); return;
+  }
+
+  const dg   = dist(myLat,myLng,GOAL.lat,GOAL.lng);
+  const maxD = Math.max(dg,30);
+  const sc   = (W*0.4)/maxD;
+  document.getElementById('map-scale').textContent='表示範囲 約'+Math.round(maxD)+'m';
+
+  // グリッド
+  mapX.strokeStyle='rgba(100,200,100,0.07)'; mapX.lineWidth=0.5;
+  [0.33,0.67,1].forEach(r=>{mapX.beginPath();mapX.arc(cx,cy,maxD*r*sc,0,Math.PI*2);mapX.stroke();});
+
+  // 北線
+  mapX.strokeStyle='rgba(100,200,100,0.2)'; mapX.setLineDash([4,5]);
+  mapX.beginPath(); mapX.moveTo(cx,cy); mapX.lineTo(cx,10); mapX.stroke(); mapX.setLineDash([]);
+  mapX.fillStyle='rgba(100,200,100,0.5)'; mapX.font='11px sans-serif'; mapX.textAlign='center';
+  mapX.fillText('N',cx,18);
+
+  // 障害物 & 回避ルート
+  const gPx  = gps2px(GOAL.lat,GOAL.lng,sc,cx,cy);
+  let avPx=null;
+  OBSTACLES.forEach(ob=>{
+    const px=gps2px(ob.lat,ob.lng,sc,cx,cy);
+    const d =dist(myLat,myLng,ob.lat,ob.lng);
+    const rp=Math.max(ob.radiusM*sc,8);
+    mapX.beginPath(); mapX.arc(px.x,px.y,rp,0,Math.PI*2);
+    mapX.fillStyle='rgba(255,60,60,0.1)'; mapX.fill();
+    mapX.strokeStyle=d<=OBS_SHOW_DIST?'rgba(255,60,60,0.8)':'rgba(255,130,60,0.4)';
+    mapX.lineWidth=1.5; mapX.stroke();
+    const s=10; mapX.fillStyle=d<=OBS_SHOW_DIST?'rgba(255,60,60,0.95)':'rgba(255,130,60,0.8)';
+    mapX.fillRect(px.x-s/2,px.y-s/2,s,s);
+    mapX.fillStyle='rgba(255,200,180,0.85)'; mapX.font='11px sans-serif'; mapX.textAlign='center';
+    mapX.fillText(ob.name,px.x,px.y-11);
+    mapX.fillStyle='rgba(255,200,100,0.7)'; mapX.font='10px sans-serif';
+    mapX.fillText(Math.round(d)+'m',px.x,px.y+18);
+    // 回避ウェイポイント
+    const dl=ob.lng-myLng, dt=ob.lat-myLat, len=Math.hypot(dl,dt);
+    if (len>0) { const m=(ob.radiusM+3)/111000; avPx=gps2px(ob.lat+dl/len*m,ob.lng-dt/len*m,sc,cx,cy); }
+  });
+
+  // ルート線（現在地→回避点→ゴール）
+  mapX.strokeStyle='#00FFAA'; mapX.lineWidth=2; mapX.setLineDash([6,4]);
+  mapX.beginPath(); mapX.moveTo(cx,cy);
+  if (avPx) mapX.lineTo(avPx.x,avPx.y);
+  mapX.lineTo(gPx.x,gPx.y); mapX.stroke(); mapX.setLineDash([]);
+
+  // ゴール
+  mapX.beginPath(); mapX.arc(gPx.x,gPx.y,9,0,Math.PI*2);
+  mapX.fillStyle='#FFD700'; mapX.fill();
+  mapX.strokeStyle='#FFF'; mapX.lineWidth=1.5; mapX.stroke();
+  mapX.fillStyle='#000'; mapX.font='bold 9px sans-serif'; mapX.textAlign='center';
+  mapX.fillText('G',gPx.x,gPx.y+3);
+  mapX.fillStyle='rgba(255,215,0,0.8)'; mapX.font='10px sans-serif';
+  mapX.fillText(Math.round(dg)+'m',gPx.x,gPx.y-13);
+
+  // 進行方向
+  const hRad=(deviceHeading+orientOffset())*Math.PI/180;
+  mapX.strokeStyle='rgba(100,150,255,0.55)'; mapX.lineWidth=1.5;
+  mapX.beginPath(); mapX.moveTo(cx,cy); mapX.lineTo(cx+Math.sin(hRad)*22,cy-Math.cos(hRad)*22); mapX.stroke();
+
+  // 自分
+  mapX.beginPath(); mapX.arc(cx,cy,7,0,Math.PI*2);
+  mapX.fillStyle='#4488FF'; mapX.fill();
+  mapX.strokeStyle='#FFF'; mapX.lineWidth=2; mapX.stroke();
+}
+
+// ───── カメラAR ─────
+function drawCamAR() {
+  if (!camOK||myLat===null) return;
+  const W=camC.offsetWidth||200, H=camC.offsetHeight||300;
+  camC.width=W; camC.height=H;
+  camX.clearRect(0,0,W,H);
+  const ob=nearest(); if (!ob||ob.d>OBS_SHOW_DIST*2) return;
+
+  const relB = ((bear(myLat,myLng,ob.lat,ob.lng)-deviceHeading-orientOffset())+540)%360-180;
+  const half  = CAM_FOV/2;
+  if (Math.abs(relB)>half+25) return;
+
+  if (Math.abs(relB)<=half) {
+    // 視野内：赤枠マーカー
+    const xp   = W*Math.max(0.05,Math.min(0.95,(relB+half)/CAM_FOV));
+    const sz   = Math.max(38,100-ob.d*4);
+    const x1=xp-sz/2, y1=H*0.25, x2=xp+sz/2, y2=H*0.82;
+    camX.strokeStyle='rgba(255,50,50,0.9)'; camX.lineWidth=2.5;
+    camX.strokeRect(x1,y1,sz,y2-y1);
+    // コーナー
+    const cL=14; camX.lineWidth=3;
+    [[x1,y1,1,1],[x2,y1,-1,1],[x1,y2,1,-1],[x2,y2,-1,-1]].forEach(([cx,cy,sx,sy])=>{
+      camX.beginPath(); camX.moveTo(cx+sx*cL,cy); camX.lineTo(cx,cy); camX.lineTo(cx,cy+sy*cL); camX.stroke();
+    });
+    // ラベル
+    camX.fillStyle='rgba(180,0,0,0.75)';
+    camX.fillRect(xp-55,y1-30,110,28);
+    camX.fillStyle='#FFF'; camX.font='bold 13px sans-serif'; camX.textAlign='center';
+    camX.fillText(ob.name+'  '+ob.d.toFixed(0)+'m',xp,y1-12);
+  } else {
+    // 視野外：端にインジケーター
+    const sx=relB>0?W-24:24;
+    camX.fillStyle='rgba(255,100,0,0.9)';
+    camX.font='bold 24px sans-serif'; camX.textAlign='center';
+    camX.fillText(relB>0?'▶':'◀',sx,H/2);
+    camX.font='11px sans-serif';
+    camX.fillText(ob.name,sx,H/2+22);
+    camX.fillText(ob.d.toFixed(0)+'m',sx,H/2+36);
+  }
+}
+
+// ───── コンパス ─────
+function startGyro() {
+  window.addEventListener('deviceorientationabsolute',e=>{if(e.alpha!==null){deviceHeading=e.alpha;updateNav();}},true);
+  window.addEventListener('deviceorientation',e=>{
+    if (e.webkitCompassHeading!==undefined) deviceHeading=e.webkitCompassHeading;
+    else if (e.absolute&&e.alpha!==null) deviceHeading=e.alpha;
+    updateNav();
+  },true);
+}
+
+// ───── 計算 ─────
+function gps2px(lat,lng,sc,cx,cy){const dLat=lat-myLat,dLng=lng-myLng;return{x:cx+dLng*111000*Math.cos(myLat*Math.PI/180)*sc,y:cy-dLat*111000*sc};}
+function nearest(){let n=null,m=Infinity;OBSTACLES.forEach(o=>{const d=dist(myLat,myLng,o.lat,o.lng);if(d<m){m=d;n=Object.assign({},o,{d});}});return n;}
+function avoidDir(ob){const dLat=ob.lat-myLat,dLng=ob.lng-myLng;return{dlat:dLng,dlng:-dLat,isRight:true};}
+function bfv(v){return(Math.atan2(v.dlng,v.dlat)*180/Math.PI+360)%360;}
+function dist(a,b,c,d){const R=6371000,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180;const x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function bear(a,b,c,d){const dG=(d-b)*Math.PI/180;const y=Math.sin(dG)*Math.cos(c*Math.PI/180);const x=Math.cos(a*Math.PI/180)*Math.sin(c*Math.PI/180)-Math.sin(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.cos(dG);return(Math.atan2(y,x)*180/Math.PI+360)%360;}
+function inPoly(p,vs){let i=false;for(let a=0,b=vs.length-1;a<vs.length;b=a++){const[xa,ya]=vs[a],[xb,yb]=vs[b];if(((ya>p[0])!=(yb>p[0]))&&(p[1]<(xb-xa)*(p[0]-ya)/(yb-ya)+xa))i=!i;}return i;}
+function ts(){const n=new Date();return String(n.getFullYear())+String(n.getMonth()+1).padStart(2,'0')+String(n.getDate()).padStart(2,'0')+'-'+String(n.getHours()).padStart(2,'0')+String(n.getMinutes()).padStart(2,'0')+String(n.getSeconds()).padStart(2,'0');}
+</script>
+</body>
+</html>
