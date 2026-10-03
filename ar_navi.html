@@ -1,0 +1,493 @@
+cat > /mnt/user-data/outputs/ar_navi.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AR避難ナビ</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; color:#fff; font-family:'Helvetica Neue',sans-serif; height:100vh; width:100vw; overflow:hidden; }
+
+/* ① 横向き指示 */
+#rotate-screen {
+  position:fixed; inset:0; background:#111;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:1000; padding:20px; text-align:center;
+}
+#rotate-screen.hidden { display:none; }
+.rotate-icon { font-size:64px; margin-bottom:24px; animation:swing 1.5s ease-in-out infinite; }
+@keyframes swing { 0%,100%{transform:rotate(-30deg)} 50%{transform:rotate(30deg)} }
+
+/* 権限画面 */
+#perm-screen {
+  position:fixed; inset:0; background:#111;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:900; padding:24px; text-align:center;
+}
+#perm-screen.hidden { display:none; }
+.start-btn {
+  margin-top:28px; padding:16px 44px; font-size:18px; font-weight:bold;
+  background:#FFD700; color:#000; border:none; border-radius:12px; cursor:pointer;
+}
+
+/* メイン3分割 */
+#main-app { display:none; width:100vw; height:100vh; flex-direction:row; }
+#main-app.active { display:flex; }
+
+/* ── 左パネル：マップ ── */
+#panel-left {
+  width:33%; height:100%;
+  background:rgba(0,12,0,0.95);
+  border-right:1px solid rgba(100,200,100,0.2);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px;
+}
+.panel-label { font-size:10px; color:rgba(255,255,255,0.3); letter-spacing:1px; margin-bottom:5px; }
+#minimap { width:100%; max-width:260px; aspect-ratio:1; border-radius:8px; }
+#map-scale { font-size:9px; color:rgba(255,255,255,0.2); margin-top:4px; }
+
+/* ── 中央パネル：AR障害物オーバーレイ ── */
+#panel-mid {
+  width:34%; height:100%;
+  background:#000;          /* 黒＝XREALでは透明（現実が透過して見える） */
+  border-right:1px solid rgba(80,80,80,0.2);
+  position:relative; overflow:hidden;
+}
+#ar-canvas { position:absolute; inset:0; width:100%; height:100%; }
+/* FOVガイド線（薄く表示） */
+#fov-guide {
+  position:absolute; inset:0;
+  border-left:1px dashed rgba(100,100,100,0.2);
+  border-right:1px dashed rgba(100,100,100,0.2);
+  pointer-events:none;
+}
+#mid-label {
+  position:absolute; bottom:8px; left:0; right:0;
+  text-align:center; font-size:9px;
+  color:rgba(255,255,255,0.2); letter-spacing:1px;
+}
+
+/* ── 右パネル：ゴールナビ ── */
+#panel-right {
+  width:33%; height:100%; background:#000;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px;
+}
+#nav-badge {
+  font-size:12px; font-weight:bold; padding:6px 18px;
+  border-radius:20px; margin-bottom:8px; text-align:center; white-space:nowrap;
+}
+.badge-wait  { background:rgba(100,100,100,0.7); }
+.badge-safe  { background:rgba(30,160,60,0.9); }
+.badge-avoid { background:rgba(200,100,0,0.9); }
+
+#arrow-wrap {
+  width:120px; height:120px;
+  display:flex; align-items:center; justify-content:center; margin:8px 0;
+}
+#arrow {
+  width:0; height:0;
+  border-left:38px solid transparent; border-right:38px solid transparent;
+  border-bottom:96px solid #FFD700;
+  filter:drop-shadow(0 0 12px rgba(255,215,0,0.9));
+  transition:transform .25s ease-out, border-bottom-color .3s;
+  transform-origin:center 70%;
+}
+#arrow.avoid { border-bottom-color:#FF6600; }
+#dest-label  { font-size:13px; font-weight:bold; color:#FFD700; text-align:center; min-height:18px; }
+#avoid-label { font-size:15px; font-weight:900; color:#FF6600; text-align:center; min-height:22px; margin:2px 0; }
+#dist-val    { font-size:42px; font-weight:900; text-align:center; line-height:1; }
+#dist-unit   { font-size:13px; color:rgba(255,255,255,0.5); text-align:center; margin-top:2px; }
+#send-info   { font-size:9px; color:rgba(255,255,255,0.2); text-align:center; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<!-- 横向き指示 -->
+<div id="rotate-screen">
+  <div class="rotate-icon">📱</div>
+  <div style="font-size:22px;font-weight:bold;margin-bottom:14px;">スマートフォンを横向きに</div>
+  <div style="font-size:14px;color:rgba(255,255,255,0.6);line-height:1.8;">
+    左右どちら向きでもOKです<br>横向きにすると次の画面が表示されます
+  </div>
+  <div style="margin-top:24px;font-size:36px;">↔️</div>
+</div>
+
+<!-- 権限画面 -->
+<div id="perm-screen" class="hidden">
+  <div style="font-size:22px;font-weight:bold;margin-bottom:18px;">AR避難ナビ</div>
+  <div style="font-size:13px;color:rgba(255,255,255,0.65);line-height:2.4;">
+    📍 位置情報（GPS）<br>
+    🧭 コンパス（方向センサー）
+  </div>
+  <button class="start-btn" id="start-btn">許可して開始 ▶</button>
+  <div style="margin-top:14px;font-size:10px;color:rgba(255,255,255,0.25);">iOSはSafariで開いてください</div>
+</div>
+
+<!-- 3分割メイン -->
+<div id="main-app">
+
+  <!-- 左：マップ -->
+  <div id="panel-left">
+    <div class="panel-label">全体マップ（北↑）</div>
+    <canvas id="minimap" width="400" height="400"></canvas>
+    <div id="map-scale"></div>
+  </div>
+
+  <!-- 中央：AR障害物オーバーレイ -->
+  <div id="panel-mid">
+    <div id="fov-guide"></div>
+    <canvas id="ar-canvas"></canvas>
+    <div id="mid-label">AR障害物オーバーレイ</div>
+  </div>
+
+  <!-- 右：ゴールナビ -->
+  <div id="panel-right">
+    <div class="panel-label">ゴールナビ</div>
+    <div id="nav-badge" class="badge-wait">📡 GPS取得中</div>
+    <div id="arrow-wrap"><div id="arrow"></div></div>
+    <div id="dest-label">--</div>
+    <div id="avoid-label"></div>
+    <div id="dist-val">--</div>
+    <div id="dist-unit">目的地まで（m）</div>
+    <div id="send-info">送信: 待機中</div>
+  </div>
+
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getFirestore, doc, setDoc, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:"AIzaSyBG-JwC9VKwnSHaSkvGLzNLvXtvZ3U0q6M",
+  authDomain:"heavy-rain-evacuation.firebaseapp.com",
+  projectId:"heavy-rain-evacuation",
+  storageBucket:"heavy-rain-evacuation.firebasestorage.app",
+  appId:"1:405482442865:web:99c4a046167821b4abcbd0"
+};
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ★ 実験設定
+const GOAL = { lat:36.1102287, lng:139.3642706, name:"ゴール地点★" };
+const OBSTACLES = [
+  { lat:36.1095, lng:139.3633, radiusM:3.0, name:"障害物1",
+    widthM:2.0, heightM:2.0 }, // 障害物の実際のサイズ（幅m・高さm）
+];
+const AREA = [[36.110889,139.360278],[36.110306,139.367194],[36.105889,139.365111],[36.106222,139.357861]];
+const OBS_SHOW_DIST = 20.0;  // 障害物を表示し始める距離(m)
+const AR_FOV        = 46;    // XREAL Air 2 Ultra 水平視野角（度）
+const PIXEL_PER_DEG = 0;     // 0=自動計算（パネル幅 / AR_FOV）
+
+// 状態
+let myLat=null, myLng=null, deviceHeading=0;
+let animFrame=0;
+let deviceId = (() => {
+  let id=localStorage.getItem('dv');
+  if (!id){id='u'+Math.random().toString(36).slice(2,9);localStorage.setItem('dv',id);}
+  return id;
+})();
+
+const mapC = document.getElementById('minimap');
+const mapX = mapC.getContext('2d');
+const arC  = document.getElementById('ar-canvas');
+const arX  = arC.getContext('2d');
+
+// ───── 向き検出 ─────
+function isLandscape(){const a=screen.orientation?screen.orientation.angle:(window.orientation||0);return a===90||a===270||a===-90;}
+function orientOffset(){const a=screen.orientation?screen.orientation.angle:(window.orientation||0);if(a===90)return -90;if(a===270||a===-90)return 90;return 0;}
+function checkOrient(){
+  const land=isLandscape();
+  const started=document.getElementById('main-app').classList.contains('active');
+  document.getElementById('rotate-screen').classList.toggle('hidden',land);
+  if (land&&!started) document.getElementById('perm-screen').classList.remove('hidden');
+  if (!land) document.getElementById('perm-screen').classList.add('hidden');
+}
+['orientationchange','resize'].forEach(e=>window.addEventListener(e,()=>{checkOrient();syncCanvases();}));
+screen.orientation&&screen.orientation.addEventListener('change',()=>{checkOrient();syncCanvases();});
+checkOrient();
+
+// ───── キャンバスサイズ同期 ─────
+function syncCanvases(){
+  const pm=document.getElementById('panel-mid');
+  arC.width=pm.offsetWidth; arC.height=pm.offsetHeight;
+}
+
+// ───── 開始ボタン ─────
+document.getElementById('start-btn').addEventListener('click', async ()=>{
+  if (typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{const s=await DeviceOrientationEvent.requestPermission();if(s!=='granted'){alert('コンパスの許可が必要です');return;}}catch(e){}
+  }
+  document.getElementById('perm-screen').classList.add('hidden');
+  document.getElementById('main-app').classList.add('active');
+  syncCanvases();
+  startGyro(); startGPS();
+  setInterval(drawMap,500);
+  requestAnimationFrame(animLoop);
+});
+
+// ───── アニメーションループ（AR描画は毎フレーム） ─────
+function animLoop(){
+  animFrame++;
+  drawAROverlay();
+  requestAnimationFrame(animLoop);
+}
+
+// ───── GPS ─────
+function startGPS(){
+  navigator.geolocation.watchPosition(pos=>{
+    myLat=pos.coords.latitude; myLng=pos.coords.longitude;
+    sendFire(myLat,myLng); updateNav();
+  },()=>{document.getElementById('send-info').textContent='GPSエラー';},{enableHighAccuracy:true,maximumAge:0});
+}
+async function sendFire(lat,lng){
+  if(!inPoly([lat,lng],AREA)){document.getElementById('send-info').textContent='エリア外';return;}
+  try{
+    await setDoc(doc(db,'oame_live_data',ts()+'-'+deviceId),{lat,lng,timestamp:serverTimestamp(),deviceId});
+    document.getElementById('send-info').textContent='送信: '+new Date().toLocaleTimeString('ja-JP');
+  }catch(e){}
+}
+
+// ───── ナビ更新（右パネル） ─────
+function updateNav(){
+  if(myLat===null)return;
+  const ob=nearest(); const ofs=orientOffset();
+  if(ob&&ob.d<=ob.radiusM){
+    const avd=avoidDir(ob);
+    setArrow(bfv(avd)-deviceHeading+ofs,'avoid');
+    el('nav-badge','⚠️ 障害物接近 → 回避！','badge-avoid');
+    el('dest-label',ob.name+' に注意！');
+    el('avoid-label',avd.isRight?'>> 右に回避 >>':'<< 左に回避 <<');
+    el('dist-val',ob.d.toFixed(1)); el('dist-unit','m で障害物');
+  } else {
+    const dg=dist(myLat,myLng,GOAL.lat,GOAL.lng);
+    setArrow(bear(myLat,myLng,GOAL.lat,GOAL.lng)-deviceHeading+ofs,'');
+    el('nav-badge','ゴールへ進んでください','badge-safe');
+    el('dest-label',GOAL.name); el('avoid-label','');
+    el('dist-val',Math.round(dg)); el('dist-unit','目的地まで（m）');
+  }
+}
+function setArrow(ang,cls){const a=document.getElementById('arrow');a.style.transform='rotate('+ang+'deg)';a.className=cls;}
+function el(id,txt,cls){const e=document.getElementById(id);e.textContent=txt;if(cls!==undefined)e.className=cls;}
+
+// ───── AR障害物オーバーレイ（中央パネル） ─────
+function drawAROverlay(){
+  const W=arC.width, H=arC.height;
+  // 背景は黒（XREALでは透明に見える）
+  arX.clearRect(0,0,W,H);
+
+  // ホライゾン線（薄く・参考用）
+  arX.strokeStyle='rgba(100,140,180,0.12)'; arX.lineWidth=1; arX.setLineDash([4,8]);
+  arX.beginPath(); arX.moveTo(0,H*0.52); arX.lineTo(W,H*0.52); arX.stroke(); arX.setLineDash([]);
+
+  if(myLat===null){
+    arX.fillStyle='rgba(255,255,255,0.18)'; arX.font='12px sans-serif'; arX.textAlign='center';
+    arX.fillText('GPS取得中…',W/2,H/2); return;
+  }
+
+  const ob=nearest();
+  if(!ob||ob.d>OBS_SHOW_DIST*1.5){
+    arX.fillStyle='rgba(255,255,255,0.08)'; arX.font='11px sans-serif'; arX.textAlign='center';
+    arX.fillText('障害物なし',W/2,H/2); return;
+  }
+
+  // 相対方位角（-180 ～ +180）
+  const relB = ((bear(myLat,myLng,ob.lat,ob.lng)-deviceHeading-orientOffset())+540)%360-180;
+  const halfFOV = AR_FOV/2;
+  // ピクセル/度
+  const ppd = W / AR_FOV;
+
+  if(Math.abs(relB)<=halfFOV){
+    // ─── 視野内：障害物を描画 ───
+    const xCenter = W/2 + relB*ppd;
+    const yGround = H*0.72;  // 地面ライン
+    const yEye    = H*0.45;  // 目線の高さ（障害物の上端あたり）
+
+    // 距離に応じたサイズ（遠いほど小さい）
+    // 障害物の実サイズを角度に変換 → ピクセルに変換
+    const angW = 2*Math.atan2(ob.widthM/2, Math.max(ob.d,0.5))*180/Math.PI;
+    const angH = 2*Math.atan2(ob.heightM/2, Math.max(ob.d,0.5))*180/Math.PI;
+    const pxW  = Math.max(20, Math.min(W*0.6, angW*ppd));
+    const pxH  = Math.max(30, Math.min(H*0.7, angH*ppd*2.5)); // 高さ方向は倍率を調整
+
+    const isClose = ob.d<=ob.radiusM;
+    const isNear  = ob.d<=OBS_SHOW_DIST/2;
+
+    // 色（距離に応じて変化）
+    const alpha  = Math.min(0.95, 0.4+0.55*(1-ob.d/OBS_SHOW_DIST));
+    const colorFill = isClose ? `rgba(255,40,40,${alpha})` :
+                      isNear  ? `rgba(255,110,0,${alpha})`  :
+                                `rgba(255,200,0,${alpha*0.7})`;
+    const colorLine = isClose ? 'rgba(255,80,80,0.95)' :
+                      isNear  ? 'rgba(255,140,0,0.9)'   :
+                                'rgba(255,220,0,0.7)';
+
+    // 地面との接続線（地面に立っているように見せる）
+    arX.strokeStyle='rgba(255,100,0,0.3)'; arX.lineWidth=1; arX.setLineDash([3,4]);
+    arX.beginPath(); arX.moveTo(xCenter,yGround); arX.lineTo(xCenter,yEye+pxH/2); arX.stroke(); arX.setLineDash([]);
+
+    // 地面の影楕円
+    arX.beginPath();
+    arX.ellipse(xCenter,yGround,pxW*0.55,8*Math.max(0.3,1-ob.d/15),0,0,Math.PI*2);
+    arX.fillStyle=`rgba(255,60,0,${alpha*0.25})`; arX.fill();
+
+    // 障害物の本体（箱）
+    const bx=xCenter-pxW/2, by=yEye-pxH/2;
+    // 前面
+    arX.fillStyle=colorFill;
+    arX.fillRect(bx,by,pxW,pxH);
+    // 境界線
+    arX.strokeStyle=colorLine; arX.lineWidth=isClose?3:2;
+    arX.strokeRect(bx,by,pxW,pxH);
+
+    // 奥行き感（側面・上面）
+    const dp = Math.max(5, pxW*0.18); // 奥行きピクセル
+    arX.fillStyle=colorFill.replace(/[\d.]+\)$/,`${alpha*0.6})`);
+    // 上面
+    arX.beginPath();
+    arX.moveTo(bx,by); arX.lineTo(bx+dp,by-dp); arX.lineTo(bx+pxW+dp,by-dp); arX.lineTo(bx+pxW,by); arX.closePath();
+    arX.fill(); arX.strokeStyle=colorLine; arX.lineWidth=1; arX.stroke();
+    // 側面（右）
+    arX.beginPath();
+    arX.moveTo(bx+pxW,by); arX.lineTo(bx+pxW+dp,by-dp); arX.lineTo(bx+pxW+dp,by-dp+pxH); arX.lineTo(bx+pxW,by+pxH); arX.closePath();
+    arX.fill(); arX.stroke();
+
+    // ⚠ 接近時の点滅マーカー
+    if(isClose&&animFrame%20<10){
+      arX.fillStyle='rgba(255,30,30,0.9)';
+      arX.font='bold 18px sans-serif'; arX.textAlign='center';
+      arX.fillText('⚠',xCenter,by-dp-18);
+    }
+
+    // コーナーマーカー（ARらしい演出）
+    const cL=Math.max(8,pxW*0.2);
+    [[bx,by,1,1],[bx+pxW,by,-1,1],[bx,by+pxH,1,-1],[bx+pxW,by+pxH,-1,-1]].forEach(([cx,cy,sx,sy])=>{
+      arX.strokeStyle=colorLine; arX.lineWidth=isClose?3:2;
+      arX.beginPath(); arX.moveTo(cx+sx*cL,cy); arX.lineTo(cx,cy); arX.lineTo(cx,cy+sy*cL); arX.stroke();
+    });
+
+    // 距離・名前ラベル
+    const lblY = by-dp-6;
+    arX.fillStyle='rgba(0,0,0,0.65)';
+    arX.roundRect(xCenter-52,lblY-24,104,26,5); arX.fill();
+    arX.fillStyle='#FFF'; arX.font='bold 13px sans-serif'; arX.textAlign='center';
+    arX.fillText(ob.name+'  '+ob.d.toFixed(0)+'m',xCenter,lblY-7);
+
+    // 距離バー（下部）
+    const barW=Math.min(W*0.8,200); const barH=5;
+    const barX=(W-barW)/2, barY=H-18;
+    arX.fillStyle='rgba(255,255,255,0.1)'; arX.fillRect(barX,barY,barW,barH);
+    const ratio=Math.max(0,1-ob.d/OBS_SHOW_DIST);
+    const barColor=isClose?'#FF3333':isNear?'#FF8800':'#FFCC00';
+    arX.fillStyle=barColor; arX.fillRect(barX,barY,barW*ratio,barH);
+    arX.fillStyle='rgba(255,255,255,0.4)'; arX.font='9px sans-serif'; arX.textAlign='center';
+    arX.fillText(ob.d.toFixed(0)+'m / 表示範囲'+OBS_SHOW_DIST+'m',W/2,barY-3);
+
+  } else {
+    // ─── 視野外：端に方向インジケーター ───
+    const side=relB>0?W-36:36;
+    // 矢印の点滅
+    const alpha2=0.6+0.3*Math.sin(animFrame*0.1);
+    arX.fillStyle=`rgba(255,120,0,${alpha2})`;
+    arX.font='bold 30px sans-serif'; arX.textAlign='center';
+    arX.fillText(relB>0?'▶':'◀',side,H/2-10);
+    arX.font='11px sans-serif';
+    arX.fillText(ob.name,side,H/2+16);
+    arX.fillText(ob.d.toFixed(0)+'m',side,H/2+30);
+    // 角度ガイド
+    arX.fillStyle='rgba(255,255,255,0.2)'; arX.font='9px sans-serif';
+    arX.fillText(Math.abs(Math.round(relB))+'° 外',side,H/2+46);
+  }
+}
+
+// ───── ミニマップ ─────
+function drawMap(){
+  const W=mapC.width, H=mapC.height, cx=W/2, cy=H/2;
+  mapX.clearRect(0,0,W,H);
+  mapX.fillStyle='rgba(0,14,0,0.97)'; mapX.fillRect(0,0,W,H);
+  if(myLat===null){mapX.fillStyle='rgba(255,255,255,0.3)';mapX.font='18px sans-serif';mapX.textAlign='center';mapX.fillText('GPS取得中…',cx,cy);return;}
+
+  const dg=dist(myLat,myLng,GOAL.lat,GOAL.lng);
+  const maxD=Math.max(dg,30); const sc=(W*0.4)/maxD;
+  document.getElementById('map-scale').textContent='表示範囲 約'+Math.round(maxD)+'m';
+
+  // グリッド
+  mapX.strokeStyle='rgba(100,200,100,0.07)'; mapX.lineWidth=0.5;
+  [0.33,0.67,1].forEach(r=>{mapX.beginPath();mapX.arc(cx,cy,maxD*r*sc,0,Math.PI*2);mapX.stroke();});
+  // 北線
+  mapX.strokeStyle='rgba(100,200,100,0.2)'; mapX.setLineDash([4,5]);
+  mapX.beginPath(); mapX.moveTo(cx,cy); mapX.lineTo(cx,10); mapX.stroke(); mapX.setLineDash([]);
+  mapX.fillStyle='rgba(100,200,100,0.5)'; mapX.font='11px sans-serif'; mapX.textAlign='center';
+  mapX.fillText('N',cx,18);
+
+  // 障害物 & 回避ルート計算
+  const gPx=gps2px(GOAL.lat,GOAL.lng,sc,cx,cy); let avPx=null;
+  OBSTACLES.forEach(ob=>{
+    const px=gps2px(ob.lat,ob.lng,sc,cx,cy);
+    const d=dist(myLat,myLng,ob.lat,ob.lng);
+    const rp=Math.max(ob.radiusM*sc,8);
+    mapX.beginPath(); mapX.arc(px.x,px.y,rp,0,Math.PI*2);
+    mapX.fillStyle='rgba(255,60,60,0.1)'; mapX.fill();
+    mapX.strokeStyle=d<=OBS_SHOW_DIST?'rgba(255,60,60,0.8)':'rgba(255,130,60,0.4)';
+    mapX.lineWidth=1.5; mapX.stroke();
+    const s=10;
+    mapX.fillStyle=d<=OBS_SHOW_DIST?'rgba(255,60,60,0.95)':'rgba(255,130,60,0.8)';
+    mapX.fillRect(px.x-s/2,px.y-s/2,s,s);
+    mapX.fillStyle='rgba(255,200,180,0.85)'; mapX.font='11px sans-serif'; mapX.textAlign='center';
+    mapX.fillText(ob.name,px.x,px.y-11);
+    mapX.fillStyle='rgba(255,200,100,0.7)'; mapX.font='10px sans-serif';
+    mapX.fillText(Math.round(d)+'m',px.x,px.y+18);
+    const dl=ob.lng-myLng, dt=ob.lat-myLat, len=Math.hypot(dl,dt);
+    if(len>0){const m=(ob.radiusM+3)/111000; avPx=gps2px(ob.lat+dl/len*m,ob.lng-dt/len*m,sc,cx,cy);}
+  });
+
+  // 避難ルート線
+  mapX.strokeStyle='#00FFAA'; mapX.lineWidth=2; mapX.setLineDash([6,4]);
+  mapX.beginPath(); mapX.moveTo(cx,cy);
+  if(avPx) mapX.lineTo(avPx.x,avPx.y);
+  mapX.lineTo(gPx.x,gPx.y); mapX.stroke(); mapX.setLineDash([]);
+
+  // ゴール
+  mapX.beginPath(); mapX.arc(gPx.x,gPx.y,9,0,Math.PI*2);
+  mapX.fillStyle='#FFD700'; mapX.fill();
+  mapX.strokeStyle='#FFF'; mapX.lineWidth=1.5; mapX.stroke();
+  mapX.fillStyle='#000'; mapX.font='bold 9px sans-serif'; mapX.textAlign='center';
+  mapX.fillText('G',gPx.x,gPx.y+3);
+  mapX.fillStyle='rgba(255,215,0,0.8)'; mapX.font='10px sans-serif';
+  mapX.fillText(Math.round(dg)+'m',gPx.x,gPx.y-13);
+
+  // 進行方向
+  const hRad=(deviceHeading+orientOffset())*Math.PI/180;
+  mapX.strokeStyle='rgba(100,150,255,0.55)'; mapX.lineWidth=1.5;
+  mapX.beginPath(); mapX.moveTo(cx,cy); mapX.lineTo(cx+Math.sin(hRad)*22,cy-Math.cos(hRad)*22); mapX.stroke();
+
+  // 自分
+  mapX.beginPath(); mapX.arc(cx,cy,7,0,Math.PI*2);
+  mapX.fillStyle='#4488FF'; mapX.fill(); mapX.strokeStyle='#FFF'; mapX.lineWidth=2; mapX.stroke();
+}
+
+// ───── コンパス ─────
+function startGyro(){
+  window.addEventListener('deviceorientationabsolute',e=>{if(e.alpha!==null){deviceHeading=e.alpha;updateNav();}},true);
+  window.addEventListener('deviceorientation',e=>{
+    if(e.webkitCompassHeading!==undefined) deviceHeading=e.webkitCompassHeading;
+    else if(e.absolute&&e.alpha!==null) deviceHeading=e.alpha;
+    updateNav();
+  },true);
+}
+
+// ───── ユーティリティ ─────
+function gps2px(lat,lng,sc,cx,cy){const dLat=lat-myLat,dLng=lng-myLng;return{x:cx+dLng*111000*Math.cos(myLat*Math.PI/180)*sc,y:cy-dLat*111000*sc};}
+function nearest(){let n=null,m=Infinity;OBSTACLES.forEach(o=>{const d=dist(myLat,myLng,o.lat,o.lng);if(d<m){m=d;n=Object.assign({},o,{d});}});return n;}
+function avoidDir(ob){const dLat=ob.lat-myLat,dLng=ob.lng-myLng;return{dlat:dLng,dlng:-dLat,isRight:true};}
+function bfv(v){return(Math.atan2(v.dlng,v.dlat)*180/Math.PI+360)%360;}
+function dist(a,b,c,d){const R=6371000,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180;const x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function bear(a,b,c,d){const dG=(d-b)*Math.PI/180;const y=Math.sin(dG)*Math.cos(c*Math.PI/180);const x=Math.cos(a*Math.PI/180)*Math.sin(c*Math.PI/180)-Math.sin(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.cos(dG);return(Math.atan2(y,x)*180/Math.PI+360)%360;}
+function inPoly(p,vs){let i=false;for(let a=0,b=vs.length-1;a<vs.length;b=a++){const[xa,ya]=vs[a],[xb,yb]=vs[b];if(((ya>p[0])!=(yb>p[0]))&&(p[1]<(xb-xa)*(p[0]-ya)/(yb-ya)+xa))i=!i;}return i;}
+function ts(){const n=new Date();return String(n.getFullYear())+String(n.getMonth()+1).padStart(2,'0')+String(n.getDate()).padStart(2,'0')+'-'+String(n.getHours()).padStart(2,'0')+String(n.getMinutes()).padStart(2,'0')+String(n.getSeconds()).padStart(2,'0');}
+</script>
+</body>
+</html>
+HTMLEOF
+echo "完成"
