@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AR避難ナビ</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; color:#fff; font-family:'Helvetica Neue',sans-serif;
+       height:100vh; width:100vw; overflow:hidden; }
+
+/* 横向き指示 */
+#rotate-screen {
+  position:fixed; inset:0; background:#111; z-index:2000;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:20px; text-align:center;
+}
+#rotate-screen.hidden { display:none; }
+.ri { font-size:64px; margin-bottom:20px; animation:sw 1.5s ease-in-out infinite; }
+@keyframes sw { 0%,100%{transform:rotate(-30deg)} 50%{transform:rotate(30deg)} }
+
+/* 権限画面 */
+#perm-screen {
+  position:fixed; inset:0; background:#111; z-index:1800;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:24px; text-align:center;
+}
+#perm-screen.hidden { display:none; }
+.sbtn {
+  margin-top:24px; padding:16px 44px; font-size:18px; font-weight:bold;
+  background:#FFD700; color:#000; border:none; border-radius:12px; cursor:pointer;
+}
+
+/* ── z-index 設計 ──────────────────────
+  5  : AR canvas（障害物描画）
+  50 : Rain canvas（雨・霧・全画面、マップのみ除外）
+  60 : 上部ナビバー・右下矢印（雨の上に出る）
+  100: 左下マップパネル（雨の上に出る）
+─────────────────────────────────────── */
+
+/* 全画面 AR キャンバス */
+#ar-canvas   { position:fixed; inset:0; z-index:5; }
+/* 全画面 豪雨キャンバス（マップのみ z=100 で隠れる） */
+#rain-canvas { position:fixed; inset:0; z-index:50; pointer-events:none; }
+
+/* ── 上部ナビバー（z=60 雨の上）── */
+#top-bar {
+  position:fixed; top:0; left:0; right:0; z-index:60;
+  background:rgba(0,0,0,0.78);
+  border-bottom:1px solid rgba(255,255,255,0.12);
+}
+#top-row1 {
+  display:flex; align-items:center; padding:8px 14px; gap:10px; height:58px;
+}
+/* 小型矢印 */
+#nav-arrow-outer {
+  width:36px; height:36px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+#nav-arrow-small {
+  width:0; height:0;
+  border-left:11px solid transparent; border-right:11px solid transparent;
+  border-bottom:28px solid #FFD700;
+  filter:drop-shadow(0 0 6px rgba(255,215,0,0.9));
+  transition:transform .25s ease-out, border-bottom-color .3s;
+  transform-origin:center 65%;
+}
+#nav-arrow-small.avoid { border-bottom-color:#FF6600; }
+#nav-msg {
+  flex:1; font-size:15px; font-weight:bold;
+  white-space:nowrap; overflow:hidden;
+  text-shadow:0 0 8px rgba(0,0,0,0.9), 0 1px 3px rgba(0,0,0,1);
+}
+.msg-safe  { color:#5FE080; }
+.msg-avoid { color:#FF6600; }
+.msg-wait  { color:rgba(255,255,255,0.5); }
+#nav-right { text-align:right; flex-shrink:0; }
+#nav-dist-top {
+  font-size:24px; font-weight:900; color:#FFD700; line-height:1;
+  text-shadow:0 0 10px rgba(255,215,0,0.7);
+}
+#nav-dist-lbl { font-size:10px; color:rgba(255,255,255,0.45); }
+
+/* 障害物警告行 */
+#top-row2 {
+  display:flex; align-items:center; padding:4px 14px 7px; gap:10px;
+  border-top:1px solid rgba(255,100,0,0.3);
+  background:rgba(50,10,0,0.75);
+}
+#top-row2.hidden { display:none; }
+#obs-warn-badge {
+  font-size:11px; font-weight:bold; padding:2px 8px;
+  border-radius:4px; background:rgba(255,60,0,0.85); white-space:nowrap;
+}
+#obs-warn-dist {
+  font-size:20px; font-weight:900; color:#FF6600; min-width:64px;
+  text-shadow:0 0 8px rgba(255,100,0,0.7);
+}
+#obs-warn-bar-wrap { flex:1; }
+#obs-warn-bar-label { font-size:9px; color:rgba(255,255,255,0.3); margin-bottom:2px; }
+#obs-warn-bar-track { height:5px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden; }
+#obs-warn-bar-fill  { height:100%; border-radius:3px; transition:width .4s, background .3s; }
+#obs-warn-dir { font-size:11px; color:rgba(255,200,150,0.8); white-space:nowrap; }
+
+/* ── 左下：マップ（正方形・z=100）── */
+#panel-map {
+  position:fixed; bottom:0; left:0; z-index:100;
+  /* 縦幅固定・正方形 */
+  height:42vh; width:42vh;
+  background:rgba(0,14,0,0.92);
+  border-top:1px solid rgba(100,200,100,0.3);
+  border-right:1px solid rgba(100,200,100,0.15);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:6px;
+}
+.plbl { font-size:9px; color:rgba(255,255,255,0.25); letter-spacing:1px; margin-bottom:4px; }
+#minimap { width:100%; height:100%; max-width:100%; max-height:calc(100% - 20px); border-radius:6px; }
+#map-scale { font-size:8px; color:rgba(255,255,255,0.2); margin-top:3px; }
+
+/* ── 右下：矢印のみ（z=60 雨の上）── */
+#panel-goal {
+  position:fixed; bottom:24px; right:24px; z-index:60;
+  display:flex; flex-direction:column; align-items:center;
+}
+#arrow-wrap {
+  width:86px; height:110px;
+  display:flex; align-items:center; justify-content:center;
+}
+#arrow {
+  width:0; height:0;
+  border-left:40px solid transparent; border-right:40px solid transparent;
+  border-bottom:100px solid #FFD700;
+  filter: drop-shadow(0 0 18px rgba(255,215,0,1))
+          drop-shadow(0 0 8px rgba(255,215,0,0.8));
+  transition:transform .25s ease-out, border-bottom-color .3s;
+  transform-origin:center 65%;
+}
+#arrow.avoid {
+  border-bottom-color:#FF6600;
+  filter: drop-shadow(0 0 18px rgba(255,100,0,1))
+          drop-shadow(0 0 8px rgba(255,100,0,0.8));
+}
+
+/* 送信情報（右下隅） */
+#send-info {
+  position:fixed; bottom:6px; right:8px; z-index:60;
+  font-size:8px; color:rgba(255,255,255,0.2);
+}
+
+/* 視界ラベル */
+#visibility-note {
+  position:fixed; bottom:4px; left:43vh; z-index:60;
+  font-size:9px; color:rgba(180,210,255,0.3); letter-spacing:1px; pointer-events:none;
+}
+</style>
+</head>
+<body>
+
+<!-- 横向き指示 -->
+<div id="rotate-screen">
+  <div class="ri">📱</div>
+  <div style="font-size:22px;font-weight:bold;margin-bottom:12px;">スマートフォンを横向きに</div>
+  <div style="font-size:13px;color:rgba(255,255,255,0.6);line-height:1.8;">
+    左右どちら向きでもOKです<br>横向きにすると次の画面が表示されます
+  </div>
+  <div style="margin-top:20px;font-size:32px;">↔️</div>
+</div>
+
+<!-- 権限画面 -->
+<div id="perm-screen" class="hidden">
+  <div style="font-size:20px;font-weight:bold;margin-bottom:6px;">⛈️ AR避難ナビ</div>
+  <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:18px;">豪雨シミュレーション</div>
+  <div style="font-size:13px;color:rgba(255,255,255,0.65);line-height:2.4;">
+    📍 位置情報（GPS）<br>🧭 コンパス（方向センサー）
+  </div>
+  <button class="sbtn" id="start-btn">許可して開始 ▶</button>
+  <div style="margin-top:12px;font-size:10px;color:rgba(255,255,255,0.2);">iOSはSafariで開いてください</div>
+</div>
+
+<!-- z=5：AR障害物キャンバス -->
+<canvas id="ar-canvas"></canvas>
+<!-- z=50：豪雨キャンバス（全画面・マップのみ除外） -->
+<canvas id="rain-canvas"></canvas>
+
+<!-- z=60：上部ナビバー -->
+<div id="top-bar">
+  <div id="top-row1">
+    <div id="nav-arrow-outer"><div id="nav-arrow-small"></div></div>
+    <div id="nav-msg" class="msg-wait">📡 GPS取得中...</div>
+    <div id="nav-right">
+      <div id="nav-dist-top">--</div>
+      <div id="nav-dist-lbl">目的地まで(m)</div>
+    </div>
+  </div>
+  <div id="top-row2" class="hidden">
+    <div id="obs-warn-badge">障害物</div>
+    <div id="obs-warn-dist">-- m</div>
+    <div id="obs-warn-bar-wrap">
+      <div id="obs-warn-bar-label">障害物まで</div>
+      <div id="obs-warn-bar-track"><div id="obs-warn-bar-fill" style="width:0;background:#FFCC00;"></div></div>
+    </div>
+    <div id="obs-warn-dir">方向: --</div>
+  </div>
+</div>
+
+<!-- z=100：左下マップ（正方形・雨なし） -->
+<div id="panel-map">
+  <div class="plbl">全体マップ（北↑）</div>
+  <canvas id="minimap" width="600" height="600"></canvas>
+  <div id="map-scale"></div>
+</div>
+
+<!-- z=60：右下矢印のみ -->
+<div id="panel-goal">
+  <div id="arrow-wrap"><div id="arrow"></div></div>
+</div>
+
+<div id="send-info">送信: 待機中</div>
+<div id="visibility-note">👁 視界約5m シミュレーション</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getFirestore, doc, setDoc, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:"AIzaSyBG-JwC9VKwnSHaSkvGLzNLvXtvZ3U0q6M",
+  authDomain:"heavy-rain-evacuation.firebaseapp.com",
+  projectId:"heavy-rain-evacuation",
+  storageBucket:"heavy-rain-evacuation.firebasestorage.app",
+  appId:"1:405482442865:web:99c4a046167821b4abcbd0"
+};
+const app=initializeApp(firebaseConfig);
+const db=getFirestore(app);
+
+// ★ 実験設定
+const GOAL={lat:36.1102287,lng:139.3642706,name:"ゴール地点★"};
+const OBSTACLES=[
+  {lat:36.1095,lng:139.3633,radiusM:3.0,name:"障害物1",widthM:5.0,heightM:3.0},
+];
+const AREA=[[36.110889,139.360278],[36.110306,139.367194],[36.105889,139.365111],[36.106222,139.357861]];
+
+// ★ 豪雨・視界設定
+const RAIN={drops:280,speed:18,angle:20,fogOpa:0.17,visM:5.0};
+const OBS_SHOW=15.0;
+const AR_FOV=46;
+
+let myLat=null,myLng=null,deviceHeading=0,animFrame=0;
+let deviceId=(()=>{let id=localStorage.getItem('dv');if(!id){id='u'+Math.random().toString(36).slice(2,9);localStorage.setItem('dv',id);}return id;})();
+
+const arC=document.getElementById('ar-canvas');    const arX=arC.getContext('2d');
+const rainC=document.getElementById('rain-canvas'); const rainX=rainC.getContext('2d');
+const mapC=document.getElementById('minimap');      const mapX=mapC.getContext('2d');
+
+// ===== 雨粒 =====
+class Drop {
+  constructor(W,H,init=false){this.W=W;this.H=H;this.reset(init);}
+  reset(init=false){
+    this.x=Math.random()*(this.W+200)-100;
+    this.y=init?Math.random()*this.H:-60;
+    this.len=15+Math.random()*25; this.spd=RAIN.speed*(0.7+Math.random()*0.6);
+    this.opa=0.35+Math.random()*0.45; this.w=0.5+Math.random()*1.2;
+    if(Math.random()<0.3){this.len*=0.5;this.w*=0.6;this.opa*=0.5;}
+  }
+  update(){const r=RAIN.angle*Math.PI/180;this.x+=Math.sin(r)*this.spd;this.y+=Math.cos(r)*this.spd;if(this.y>this.H+60||this.x>this.W+100)this.reset();}
+  draw(ctx){
+    const r=RAIN.angle*Math.PI/180;
+    ctx.beginPath();ctx.moveTo(this.x,this.y);
+    ctx.lineTo(this.x+Math.sin(r)*this.len,this.y+Math.cos(r)*this.len);
+    ctx.strokeStyle=`rgba(180,210,255,${this.opa})`;ctx.lineWidth=this.w;ctx.stroke();
+  }
+}
+let drops=[];
+
+function initRain(){
+  rainC.width=window.innerWidth;rainC.height=window.innerHeight;
+  drops=[];for(let i=0;i<RAIN.drops;i++)drops.push(new Drop(rainC.width,rainC.height,true));
+}
+
+// ===== 豪雨描画（全画面・マップは z=100 で自動的に覆われる） =====
+function drawRain(){
+  const W=rainC.width,H=rainC.height;
+  rainX.clearRect(0,0,W,H);
+  rainX.fillStyle=`rgba(160,185,210,${RAIN.fogOpa})`;rainX.fillRect(0,0,W,H);
+  const gf=rainX.createLinearGradient(0,H*0.55,0,H);
+  gf.addColorStop(0,'rgba(180,200,225,0)');gf.addColorStop(1,'rgba(180,200,225,0.4)');
+  rainX.fillStyle=gf;rainX.fillRect(0,0,W,H);
+  rainX.save();rainX.lineCap='round';
+  drops.forEach(d=>{d.update();d.draw(rainX);});
+  rainX.restore();
+  const vg=rainX.createRadialGradient(W/2,H/2,H*0.25,W/2,H/2,H*0.9);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(20,30,40,0.45)');
+  rainX.fillStyle=vg;rainX.fillRect(0,0,W,H);
+}
+
+// ===== AR障害物描画（全画面） =====
+function drawAR(){
+  const W=arC.width,H=arC.height;
+  arX.clearRect(0,0,W,H);
+  arX.fillStyle='rgba(165,190,215,0.52)';arX.fillRect(0,0,W,H);
+  const gf2=arX.createLinearGradient(0,H*0.5,0,H);
+  gf2.addColorStop(0,'rgba(178,200,225,0)');gf2.addColorStop(1,'rgba(178,200,225,0.65)');
+  arX.fillStyle=gf2;arX.fillRect(0,0,W,H);
+  if(myLat===null)return;
+  const ob=nearest();
+  if(!ob||ob.d>RAIN.visM*2.2){
+    arX.fillStyle='rgba(200,220,240,0.2)';arX.font='12px sans-serif';arX.textAlign='center';
+    arX.fillText('視界外 ('+(ob?ob.d.toFixed(0)+'m先':'なし')+')',W/2,H*0.52);return;
+  }
+  const clarity=Math.max(0,Math.min(1,(RAIN.visM*2-ob.d)/RAIN.visM));
+  const relB=((bear(myLat,myLng,ob.lat,ob.lng)-deviceHeading-orientOfs())+540)%360-180;
+  const halfFOV=AR_FOV/2;
+  const ppd=W/AR_FOV;
+  arX.strokeStyle=`rgba(100,140,180,${0.07*clarity})`;arX.lineWidth=1;arX.setLineDash([4,8]);
+  arX.beginPath();arX.moveTo(0,H*0.52);arX.lineTo(W,H*0.52);arX.stroke();arX.setLineDash([]);
+  if(Math.abs(relB)<=halfFOV){
+    const xC=W/2+relB*ppd;
+    const topH=document.getElementById('top-bar').offsetHeight||60;
+    const botH=window.innerHeight*0.45;
+    const midH=(topH+(window.innerHeight-botH))/2;
+    const yEye=midH*0.88; const yGnd=(window.innerHeight-botH)*0.85;
+    const angW=2*Math.atan2(ob.widthM/2,Math.max(ob.d,0.5))*180/Math.PI;
+    const angH=2*Math.atan2(ob.heightM/2,Math.max(ob.d,0.5))*180/Math.PI;
+    const pxW=Math.max(40,Math.min(W*0.5,angW*ppd));
+    const pxH=Math.max(60,Math.min(H*0.55,angH*ppd*2.8));
+    const isClose=ob.d<=ob.radiusM,isNear=ob.d<=OBS_SHOW/2;
+    const alpha=Math.min(0.95,0.5+0.45*(1-ob.d/OBS_SHOW))*clarity;
+    const fc=isClose?`rgba(255,40,40,${alpha})`:isNear?`rgba(255,110,0,${alpha})`:`rgba(255,200,0,${alpha*0.8})`;
+    const lc=isClose?`rgba(255,80,80,${clarity*0.95})`:isNear?`rgba(255,150,0,${clarity*0.9})`:`rgba(255,220,0,${clarity*0.75})`;
+    arX.strokeStyle=`rgba(255,120,0,${0.22*clarity})`;arX.lineWidth=1;arX.setLineDash([3,4]);
+    arX.beginPath();arX.moveTo(xC,yGnd);arX.lineTo(xC,yEye+pxH/2);arX.stroke();arX.setLineDash([]);
+    arX.beginPath();arX.ellipse(xC,yGnd,pxW*0.5,7*Math.max(0.3,1-ob.d/12),0,0,Math.PI*2);
+    arX.fillStyle=`rgba(255,60,0,${0.18*clarity})`;arX.fill();
+    const bx=xC-pxW/2,by=yEye-pxH/2;
+    arX.fillStyle=fc;arX.fillRect(bx,by,pxW,pxH);
+    arX.strokeStyle=lc;arX.lineWidth=isClose?3:2;arX.strokeRect(bx,by,pxW,pxH);
+    const dp=Math.max(6,pxW*0.18);
+    const fc2=fc.replace(/[\d.]+\)$/,`${alpha*0.5})`);
+    arX.fillStyle=fc2;
+    arX.beginPath();arX.moveTo(bx,by);arX.lineTo(bx+dp,by-dp);arX.lineTo(bx+pxW+dp,by-dp);arX.lineTo(bx+pxW,by);arX.closePath();arX.fill();arX.strokeStyle=lc;arX.lineWidth=1;arX.stroke();
+    arX.beginPath();arX.moveTo(bx+pxW,by);arX.lineTo(bx+pxW+dp,by-dp);arX.lineTo(bx+pxW+dp,by-dp+pxH);arX.lineTo(bx+pxW,by+pxH);arX.closePath();arX.fill();arX.stroke();
+    if(isClose&&animFrame%20<10){arX.fillStyle=`rgba(255,40,40,${0.95*clarity})`;arX.font='bold 22px sans-serif';arX.textAlign='center';arX.fillText('⚠',xC,by-dp-22);}
+    const cL=Math.max(10,pxW*0.22);
+    [[bx,by,1,1],[bx+pxW,by,-1,1],[bx,by+pxH,1,-1],[bx+pxW,by+pxH,-1,-1]].forEach(([cx,cy,sx,sy])=>{
+      arX.strokeStyle=lc;arX.lineWidth=isClose?3:2;arX.beginPath();arX.moveTo(cx+sx*cL,cy);arX.lineTo(cx,cy);arX.lineTo(cx,cy+sy*cL);arX.stroke();
+    });
+    if(clarity>0.2){
+      arX.fillStyle=`rgba(0,0,0,${0.55*clarity})`;arX.roundRect(xC-52,by-dp-32,104,26,5);arX.fill();
+      arX.fillStyle=`rgba(255,255,255,${clarity})`;arX.font='bold 13px sans-serif';arX.textAlign='center';
+      arX.fillText(ob.name+'  '+ob.d.toFixed(0)+'m',xC,by-dp-14);
+    }
+    const fadeFog=1-clarity;
+    if(fadeFog>0.05){arX.fillStyle=`rgba(175,200,225,${fadeFog*0.75})`;arX.fillRect(bx-12,by-dp-38,pxW+dp+24,pxH+dp+50);}
+  } else {
+    const sx=relB>0?W-40:40;
+    const a2=(0.5+0.35*Math.sin(animFrame*0.1))*Math.max(clarity,0.25);
+    arX.fillStyle=`rgba(255,120,0,${a2})`;arX.font='bold 28px sans-serif';arX.textAlign='center';
+    arX.fillText(relB>0?'▶':'◀',sx,H/2);arX.font='11px sans-serif';
+    arX.fillText(ob.name,sx,H/2+22);arX.fillText(ob.d.toFixed(0)+'m',sx,H/2+36);
+  }
+}
+
+// ===== ナビ更新（上部バー・右下矢印） =====
+function updateNav(){
+  if(myLat===null)return;
+  const ob=nearest(); const ofs=orientOfs();
+  const arrowEl=document.getElementById('nav-arrow-small');
+  const bigArrow=document.getElementById('arrow');
+  if(ob&&ob.d<=ob.radiusM){
+    const avd=avoidDir(ob);
+    const ang=bfv(avd)-deviceHeading+ofs;
+    arrowEl.style.transform='rotate('+ang+'deg)'; arrowEl.className='avoid';
+    bigArrow.style.transform='rotate('+ang+'deg)'; bigArrow.className='avoid';
+    elSet('nav-msg','⚠️ '+ob.name+'に接近！→ 回避してください','msg-avoid');
+    elSet('nav-dist-top',''); elSet('nav-dist-lbl','');
+  } else {
+    const dg=dist(myLat,myLng,GOAL.lat,GOAL.lng);
+    const ang=bear(myLat,myLng,GOAL.lat,GOAL.lng)-deviceHeading+ofs;
+    arrowEl.style.transform='rotate('+ang+'deg)'; arrowEl.className='';
+    bigArrow.style.transform='rotate('+ang+'deg)'; bigArrow.className='';
+    elSet('nav-msg','ゴールへ進んでください','msg-safe');
+    elSet('nav-dist-top',Math.round(dg)); elSet('nav-dist-lbl','目的地まで(m)');
+  }
+  // 障害物警告行
+  const row2=document.getElementById('top-row2');
+  if(ob&&ob.d<=OBS_SHOW){
+    row2.classList.remove('hidden');
+    const relB=((bear(myLat,myLng,ob.lat,ob.lng)-deviceHeading-ofs)+540)%360-180;
+    const dirs=['正面','右前方','右側','右後方','後方','左後方','左側','左前方'];
+    const dname=dirs[Math.round(((relB+360)%360)/45)%8];
+    elSet('obs-warn-dist',ob.d.toFixed(0)+' m');
+    elSet('obs-warn-dir','方向: '+dname);
+    const fill=document.getElementById('obs-warn-bar-fill');
+    const ratio=Math.max(0,Math.min(1,1-ob.d/OBS_SHOW));
+    fill.style.width=(ratio*100)+'%';
+    fill.style.background=ob.d<=ob.radiusM?'#FF3333':ob.d<=OBS_SHOW/2?'#FF8800':'#FFCC00';
+    elSet('obs-warn-bar-label',ob.d<=ob.radiusM?'⚠️ 回避範囲内！':'障害物まで '+ob.d.toFixed(0)+'m / 回避範囲 '+ob.radiusM+'m');
+  } else {
+    row2.classList.add('hidden');
+  }
+}
+
+// ===== ミニマップ（正方形・上から） =====
+function drawMap(){
+  const W=mapC.width,H=mapC.height,cx=W/2,cy=H/2;
+  mapX.clearRect(0,0,W,H);
+  mapX.fillStyle='rgba(0,14,0,0.97)';mapX.fillRect(0,0,W,H);
+  if(myLat===null){mapX.fillStyle='rgba(255,255,255,0.3)';mapX.font='20px sans-serif';mapX.textAlign='center';mapX.fillText('GPS取得中…',cx,cy);return;}
+  const dg=dist(myLat,myLng,GOAL.lat,GOAL.lng);
+  const maxD=Math.max(dg,30);const sc=(W*0.4)/maxD;
+  document.getElementById('map-scale').textContent='表示範囲 約'+Math.round(maxD)+'m';
+  // グリッド
+  mapX.strokeStyle='rgba(100,200,100,0.07)';mapX.lineWidth=0.5;
+  [0.33,0.67,1].forEach(r=>{mapX.beginPath();mapX.arc(cx,cy,maxD*r*sc,0,Math.PI*2);mapX.stroke();});
+  // 北線
+  mapX.strokeStyle='rgba(100,200,100,0.2)';mapX.setLineDash([4,5]);
+  mapX.beginPath();mapX.moveTo(cx,cy);mapX.lineTo(cx,10);mapX.stroke();mapX.setLineDash([]);
+  mapX.fillStyle='rgba(100,200,100,0.5)';mapX.font='12px sans-serif';mapX.textAlign='center';mapX.fillText('N',cx,20);
+  // 視界圏
+  const visPx=RAIN.visM*sc;
+  mapX.beginPath();mapX.arc(cx,cy,visPx,0,Math.PI*2);
+  mapX.strokeStyle='rgba(100,180,255,0.5)';mapX.lineWidth=1.5;mapX.setLineDash([3,3]);mapX.stroke();mapX.setLineDash([]);
+  mapX.fillStyle='rgba(100,180,255,0.07)';mapX.fill();
+  mapX.fillStyle='rgba(100,180,255,0.4)';mapX.font='10px sans-serif';
+  mapX.fillText('視界'+RAIN.visM+'m',cx,cy-visPx-5);
+  // 障害物＆ルート
+  const gPx=gps2px(GOAL.lat,GOAL.lng,sc,cx,cy);let avPx=null;
+  OBSTACLES.forEach(ob=>{
+    const px=gps2px(ob.lat,ob.lng,sc,cx,cy);const d=dist(myLat,myLng,ob.lat,ob.lng);
+    const rp=Math.max(ob.radiusM*sc,8);
+    mapX.beginPath();mapX.arc(px.x,px.y,rp,0,Math.PI*2);
+    mapX.fillStyle='rgba(255,60,60,0.1)';mapX.fill();
+    mapX.strokeStyle=d<=OBS_SHOW?'rgba(255,60,60,0.85)':'rgba(255,130,60,0.4)';mapX.lineWidth=1.5;mapX.stroke();
+    const s=12;mapX.fillStyle='rgba(255,60,60,0.9)';mapX.fillRect(px.x-s/2,px.y-s/2,s,s);
+    mapX.fillStyle='rgba(255,200,180,0.85)';mapX.font='12px sans-serif';mapX.textAlign='center';mapX.fillText(ob.name,px.x,px.y-13);
+    mapX.fillStyle='rgba(255,200,100,0.7)';mapX.font='11px sans-serif';mapX.fillText(Math.round(d)+'m',px.x,px.y+20);
+    const dl=ob.lng-myLng,dt=ob.lat-myLat,len=Math.hypot(dl,dt);
+    if(len>0){const m=(ob.radiusM+3)/111000;avPx=gps2px(ob.lat+dl/len*m,ob.lng-dt/len*m,sc,cx,cy);}
+  });
+  mapX.strokeStyle='#00FFAA';mapX.lineWidth=2;mapX.setLineDash([6,4]);
+  mapX.beginPath();mapX.moveTo(cx,cy);if(avPx)mapX.lineTo(avPx.x,avPx.y);mapX.lineTo(gPx.x,gPx.y);mapX.stroke();mapX.setLineDash([]);
+  // ゴール
+  mapX.beginPath();mapX.arc(gPx.x,gPx.y,10,0,Math.PI*2);mapX.fillStyle='#FFD700';mapX.fill();
+  mapX.strokeStyle='#FFF';mapX.lineWidth=1.5;mapX.stroke();
+  mapX.fillStyle='#000';mapX.font='bold 10px sans-serif';mapX.textAlign='center';mapX.fillText('G',gPx.x,gPx.y+4);
+  mapX.fillStyle='rgba(255,215,0,0.8)';mapX.font='11px sans-serif';mapX.fillText(Math.round(dg)+'m',gPx.x,gPx.y-16);
+  // 進行方向
+  const hRad=(deviceHeading+orientOfs())*Math.PI/180;
+  mapX.strokeStyle='rgba(100,150,255,0.55)';mapX.lineWidth=1.5;
+  mapX.beginPath();mapX.moveTo(cx,cy);mapX.lineTo(cx+Math.sin(hRad)*24,cy-Math.cos(hRad)*24);mapX.stroke();
+  // 自分
+  mapX.beginPath();mapX.arc(cx,cy,8,0,Math.PI*2);mapX.fillStyle='#4488FF';mapX.fill();mapX.strokeStyle='#FFF';mapX.lineWidth=2;mapX.stroke();
+}
+
+// ===== 向き =====
+function isLand(){const a=screen.orientation?screen.orientation.angle:(window.orientation||0);return a===90||a===270||a===-90;}
+function orientOfs(){const a=screen.orientation?screen.orientation.angle:(window.orientation||0);if(a===90)return -90;if(a===270||a===-90)return 90;return 0;}
+function checkOrient(){
+  const land=isLand();
+  document.getElementById('rotate-screen').classList.toggle('hidden',land);
+  if(land&&!document.body.dataset.started)document.getElementById('perm-screen').classList.remove('hidden');
+  if(!land)document.getElementById('perm-screen').classList.add('hidden');
+}
+['orientationchange','resize'].forEach(e=>window.addEventListener(e,()=>{checkOrient();sync();}));
+screen.orientation&&screen.orientation.addEventListener('change',()=>{checkOrient();sync();});
+checkOrient();
+
+function sync(){
+  arC.width=window.innerWidth;arC.height=window.innerHeight;
+  rainC.width=window.innerWidth;rainC.height=window.innerHeight;
+  drops.forEach(d=>{d.W=rainC.width;d.H=rainC.height;});
+}
+
+document.getElementById('start-btn').addEventListener('click',async()=>{
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{const s=await DeviceOrientationEvent.requestPermission();if(s!=='granted'){alert('コンパスの許可が必要です');return;}}catch(e){}
+  }
+  document.getElementById('perm-screen').classList.add('hidden');
+  document.body.dataset.started='1';
+  sync();initRain();startGyro();startGPS();
+  setInterval(drawMap,500);
+  requestAnimationFrame(loop);
+});
+
+function loop(){animFrame++;drawRain();drawAR();requestAnimationFrame(loop);}
+
+// ===== GPS & Firebase =====
+function startGPS(){
+  navigator.geolocation.watchPosition(pos=>{
+    myLat=pos.coords.latitude;myLng=pos.coords.longitude;
+    sendFire(myLat,myLng);updateNav();
+  },()=>{elSet('send-info','GPSエラー');},{enableHighAccuracy:true,maximumAge:0});
+}
+async function sendFire(lat,lng){
+  if(!inPoly([lat,lng],AREA)){elSet('send-info','エリア外');return;}
+  try{
+    await setDoc(doc(db,'oame_live_data',ts()+'-'+deviceId),{lat,lng,timestamp:serverTimestamp(),deviceId});
+    elSet('send-info','送信: '+new Date().toLocaleTimeString('ja-JP'));
+  }catch(e){}
+}
+
+// ===== コンパス =====
+function startGyro(){
+  window.addEventListener('deviceorientationabsolute',e=>{if(e.alpha!==null){deviceHeading=e.alpha;updateNav();}},true);
+  window.addEventListener('deviceorientation',e=>{
+    if(e.webkitCompassHeading!==undefined)deviceHeading=e.webkitCompassHeading;
+    else if(e.absolute&&e.alpha!==null)deviceHeading=e.alpha;
+    updateNav();
+  },true);
+}
+
+// ===== ユーティリティ =====
+function gps2px(lat,lng,sc,cx,cy){const dLat=lat-myLat,dLng=lng-myLng;return{x:cx+dLng*111000*Math.cos(myLat*Math.PI/180)*sc,y:cy-dLat*111000*sc};}
+function nearest(){let n=null,m=Infinity;OBSTACLES.forEach(o=>{const d=dist(myLat,myLng,o.lat,o.lng);if(d<m){m=d;n=Object.assign({},o,{d});}});return n;}
+function avoidDir(ob){const dLat=ob.lat-myLat,dLng=ob.lng-myLng;return{dlat:dLng,dlng:-dLat,isRight:true};}
+function bfv(v){return(Math.atan2(v.dlng,v.dlat)*180/Math.PI+360)%360;}
+function dist(a,b,c,d){const R=6371000,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180;const x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function bear(a,b,c,d){const dG=(d-b)*Math.PI/180;const y=Math.sin(dG)*Math.cos(c*Math.PI/180);const x=Math.cos(a*Math.PI/180)*Math.sin(c*Math.PI/180)-Math.sin(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.cos(dG);return(Math.atan2(y,x)*180/Math.PI+360)%360;}
+function inPoly(p,vs){let i=false;for(let a=0,b=vs.length-1;a<vs.length;b=a++){const[xa,ya]=vs[a],[xb,yb]=vs[b];if(((ya>p[0])!=(yb>p[0]))&&(p[1]<(xb-xa)*(p[0]-ya)/(yb-ya)+xa))i=!i;}return i;}
+function elSet(id,txt,cls){const e=document.getElementById(id);if(!e)return;e.textContent=txt;if(cls!==undefined)e.className=cls;}
+function ts(){const n=new Date();return String(n.getFullYear())+String(n.getMonth()+1).padStart(2,'0')+String(n.getDate()).padStart(2,'0')+'-'+String(n.getHours()).padStart(2,'0')+String(n.getMinutes()).padStart(2,'0')+String(n.getSeconds()).padStart(2,'0');}
+</script>
+</body>
+</html>
