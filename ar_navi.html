@@ -491,7 +491,11 @@ function startGPS(){
     sendFire(myLat,myLng);updateNav();
   },()=>{elSet('send-info','GPSエラー');},{enableHighAccuracy:true,maximumAge:0});
 }
- try {
+async function sendFire(lat, lng) {
+  // ★ エリア外判定をコメントアウトしてスキップ（どこからでも確実に送信）
+  // if (!inPoly([lat, lng], AREA)) { elSet('send-info', 'エリア外'); return; }
+
+  try {
     const now = new Date();
     const Y = now.getFullYear();
     const M = String(now.getMonth() + 1).padStart(2, '0');
