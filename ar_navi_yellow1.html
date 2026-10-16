@@ -567,7 +567,10 @@ function updateNav(){
   const row2=document.getElementById('top-row2');
   if(ob && ob.d<=OBS_SHOW){
     row2.classList.remove('hidden');
-    const relB=((bear(myLat,myLng,ob.closestLat,ob.closestLng)-deviceHeading-ofs+180)+540)%360-180;
+    const relB = angleDiff(
+      bear(myLat, myLng, ob.lat, ob.lng),
+      deviceHeading + orientOfs()
+    );
     const dirs=['正面','右前方','右側','右後方','後方','左後方','左側','左前方'];
     const dname=dirs[Math.round(((relB+360)%360)/45)%8];
     elSet('obs-warn-dist',ob.d.toFixed(0)+' m');
